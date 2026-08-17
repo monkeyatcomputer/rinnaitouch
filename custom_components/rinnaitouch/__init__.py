@@ -12,6 +12,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.const import CONF_HOST, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv, service
+from homeassistant.helpers import entity_registry as er
 from homeassistant.const import Platform
 from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.helpers.dispatcher import dispatcher_send
@@ -38,7 +39,6 @@ PLATFORMS = [
     Platform.SWITCH,
     Platform.BINARY_SENSOR,
     Platform.SENSOR,
-    Platform.BUTTON,
     Platform.SELECT,
 ]
 
@@ -82,6 +82,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     data.start()
     entry.async_on_unload(data.close)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
+
+    # Remove entity registry entries superseded by controls that better match
+    # the controller topology.
+    entity_registry = er.async_get(hass)
+    host_id = str.replace(ip_address, ".", "_")
+    obsolete_mode_switches = {
+        f"rinnaicoolingmodeswitch_{host_id}",
+        f"rinnaievapmodeswitch_{host_id}",
+        f"rinnaiheatermodeswitch_{host_id}",
+    }
+    obsolete_mtsp_controls = {
+        f"rinnaiautoswitch_{host_id}",
+        f"rinnaiselectpresetentity_{host_id}",
+    }
+    for entity_entry in er.async_entries_for_config_entry(
+        entity_registry, entry.entry_id
+    ):
+        if (
+            entity_entry.entity_id.startswith("button.")
+            and entity_entry.platform == DOMAIN
+        ) or (
+            entity_entry.platform == DOMAIN
+            and (
+                entity_entry.unique_id in obsolete_mode_switches
+                or (
+                    data.topology.multi_set_point
+                    and entity_entry.unique_id in obsolete_mtsp_controls
+                )
+            )
+        ):
+            entity_registry.async_remove(entity_entry.entity_id)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # hass.config_entries.async_setup_platforms(entry, PLATFORMS)
     return True

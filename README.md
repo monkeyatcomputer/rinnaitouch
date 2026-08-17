@@ -43,9 +43,10 @@ To support the controller and make it work with the HA climate entity, these are
 - PRESET_AUTO → Auto mode \
   in Evaporative Mode this means Comfort Setting, in Heat/Cooler Mode, this means Schedule
 
-There is now internally a cooling selector (preselected, only available if multiple cooling methods installed)
-- COOLING_EVAP → Evap mode
-- COOLING_COOL → Refrigerated mode
+When both refrigerated and evaporative cooling are installed, a **Cooling Type**
+select is available while the system is in cooling mode:
+- Evaporative → Evap mode
+- Refrigerated → Refrigerated mode
 
 You can manipulate the Fan as required.
 
@@ -62,7 +63,7 @@ The integration reads the controller's `CFG.MTSP` flag and zone status. You no l
 | Controller setup | Main climate | Zones A-D | Common zone U |
 |---|---|---|---|
 | Single set point (`MTSP=N`) | Owns the temperature target and schedule | Damper on/off switches and temperature sensors | Read-only in heating and refrigerated cooling |
-| Multi set point / ZonePlus (`MTSP=Y`) | Controls system power and HVAC mode | Independent climate entities with set points and schedules | Read-only in heating and refrigerated cooling |
+| Multi set point / ZonePlus (`MTSP=Y`) | Controls system power and global HVAC mode | Independent climate entities with set points and schedules; each offers Off plus the active global mode | Read-only in heating and refrigerated cooling |
 | Evaporative cooling | Owns comfort level or fan speed | Zone participation controls | Zone participation control when the controller reports U |
 
 The integration adds zone entities when the bridge first reports each zone. A mode change can reveal a different zone list, so the integration keeps the zones seen in earlier modes and adds new entities without a reload. It uses the zone descriptions from the controller for entity names.

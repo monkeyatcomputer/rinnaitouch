@@ -1,12 +1,24 @@
-"""Select to choose preset"""
+"""Select entities for schedules and installed cooling types."""
 # import logging
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.const import CONF_NAME, CONF_HOST
 
-from pyrinnaitouch import RinnaiOperatingMode, RinnaiSystem, RinnaiSystemMode
+from pyrinnaitouch import (
+    RinnaiCapabilities,
+    RinnaiOperatingMode,
+    RinnaiSystem,
+    RinnaiSystemMode,
+)
 
-from .const import PRESET_AUTO, PRESET_MANUAL, DEFAULT_NAME, DOMAIN
+from .const import (
+    COOLING_TYPE_EVAPORATIVE,
+    COOLING_TYPE_REFRIGERATED,
+    DEFAULT_NAME,
+    DOMAIN,
+    PRESET_AUTO,
+    PRESET_MANUAL,
+)
 from .entity import RinnaiUpdateMixin
 
 # _LOGGER = logging.getLogger(__name__)
@@ -21,8 +33,15 @@ async def async_setup_entry(
     if name == "":
         name = DEFAULT_NAME
     data = hass.data[DOMAIN][entry.entry_id]
+    entities = []
     if not data.topology.multi_set_point:
-        async_add_entities([RinnaiSelectPresetEntity(ip_address, name)])
+        entities.append(RinnaiSelectPresetEntity(ip_address, name))
+    if {
+        RinnaiCapabilities.COOLER,
+        RinnaiCapabilities.EVAP,
+    }.issubset(data.capabilities):
+        entities.append(RinnaiCoolingTypeSelectEntity(ip_address, name))
+    async_add_entities(entities)
     return True
 
 
@@ -89,3 +108,66 @@ class RinnaiSelectPresetEntity(RinnaiUpdateMixin, SelectEntity):
             await self._system.set_unit_auto()
         else:
             await self._system.set_unit_manual()
+
+
+class RinnaiCoolingTypeSelectEntity(RinnaiUpdateMixin, SelectEntity):
+    """Select refrigerated or evaporative cooling when both are installed."""
+
+    def __init__(self, ip_address, name):
+        self._host = ip_address
+        self._system: RinnaiSystem = RinnaiSystem.get_instance(ip_address)
+        self._attr_unique_id = (
+            "rinnaicoolingtypeselect_" + str.replace(ip_address, ".", "_")
+        )
+        self._attr_name = name + " Cooling Type"
+        self._attr_device_name = name
+
+    @property
+    def device_info(self):
+        """Return device information about this controller."""
+        return {
+            "identifiers": {("rinnai_touch", self._host)},
+            "model": "Rinnai Touch Wifi",
+            "name": self._attr_device_name,
+            "manufacturer": "Rinnai/Brivis",
+        }
+
+    @property
+    def icon(self):
+        """Return the cooling selector icon."""
+        return "mdi:air-conditioner"
+
+    @property
+    def current_option(self):
+        """Return the active cooling implementation."""
+        mode = self._system.get_stored_status().mode
+        if mode == RinnaiSystemMode.COOLING:
+            return COOLING_TYPE_REFRIGERATED
+        if mode == RinnaiSystemMode.EVAP:
+            return COOLING_TYPE_EVAPORATIVE
+        return None
+
+    @property
+    def available(self):
+        """Expose cooling type while the global mode is cooling."""
+        return self._system.get_stored_status().mode in (
+            RinnaiSystemMode.COOLING,
+            RinnaiSystemMode.EVAP,
+        )
+
+    @property
+    def options(self):
+        """Return installed cooling choices."""
+        return [COOLING_TYPE_REFRIGERATED, COOLING_TYPE_EVAPORATIVE]
+
+    async def async_select_option(self, option: str) -> None:
+        """Select the active cooling implementation."""
+        if option == self.current_option:
+            return
+        if option == COOLING_TYPE_REFRIGERATED:
+            await self._system.set_cooling_mode()
+            return
+        if option == COOLING_TYPE_EVAPORATIVE:
+            await self._system.set_evap_mode()
+            return
+        raise ValueError(f"Unsupported cooling type: {option}")

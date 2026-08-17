@@ -1,4 +1,4 @@
-"""Switches for Auto/Manual, On/Off, Mode, Water Pump and Fan"""
+"""Switches for power, schedules, zones, water pump and fan."""
 # import logging
 
 from homeassistant.components.switch import SwitchEntity
@@ -8,7 +8,6 @@ from homeassistant.const import CONF_NAME, CONF_HOST
 from pyrinnaitouch import (
     RinnaiSystem,
     RinnaiSystemMode,
-    RinnaiCapabilities,
     RinnaiOperatingMode,
     RinnaiSystemStatus,
 )
@@ -37,14 +36,11 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
     ]
     if not data.topology.multi_set_point:
         entities.append(RinnaiAutoSwitch(ip_address, name))
-    if RinnaiCapabilities.COOLER in data.capabilities:
-        entities.append(RinnaiCoolingModeSwitch(ip_address, name))
-    if RinnaiCapabilities.HEATER in data.capabilities:
-        entities.append(RinnaiHeaterModeSwitch(ip_address, name))
+        if data.has_fixed_temperature_unit:
+            entities.append(RinnaiAdvanceSwitch(ip_address, name))
     if data.has_evap:
         entities.extend(
             [
-                RinnaiEvapModeSwitch(ip_address, name),
                 RinnaiWaterpumpSwitch(ip_address, name),
                 RinnaiEvapFanSwitch(ip_address, name),
             ]
@@ -62,6 +58,13 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
                     f"zone_auto_switch_{zone}",
                     lambda zone=zone: RinnaiZoneAutoSwitch(ip_address, zone, name),
                 )
+        for zone in data.thermostat_zones:
+            yield (
+                f"zone_advance_switch_{zone}",
+                lambda zone=zone: RinnaiZoneAdvanceSwitch(
+                    ip_address, zone, name
+                ),
+            )
 
     setup_discovered_entities(
         hass, entry, async_add_entities, ip_address, zone_entity_factories
@@ -139,106 +142,6 @@ class RinnaiOnOffSwitch(RinnaiExtraEntity, SwitchEntity):
             await self._system.turn_unit_off()
         elif state.mode == RinnaiSystemMode.EVAP:
             await self._system.turn_evap_off()
-
-
-class RinnaiCoolingModeSwitch(RinnaiExtraEntity, SwitchEntity):
-    """A switch to turn the system into cooling mode."""
-
-    def __init__(self, ip_address, name):
-        super().__init__(ip_address, name)
-        self._attr_name = name + " Cooling Mode Switch"
-        self._is_on = False
-
-    @property
-    def icon(self):
-        """Return the icon to use in the frontend for this device."""
-        if self.is_on:
-            return "mdi:snowflake"
-        return "mdi:snowflake-off"
-
-    @property
-    def is_on(self):
-        return self._system.get_stored_status().mode == RinnaiSystemMode.COOLING
-
-    @property
-    def available(self):
-        return (
-            RinnaiCapabilities.COOLER in self._system.get_stored_status().capabilities
-        )
-
-    async def async_turn_on(self, **kwargs):
-        if not self._system.get_stored_status().mode == RinnaiSystemMode.COOLING:
-            await self._system.set_cooling_mode()
-
-    async def async_turn_off(self, **kwargs):
-        """Turning it off does nothing"""
-        pass  # pylint: disable=unnecessary-pass
-
-
-class RinnaiHeaterModeSwitch(RinnaiExtraEntity, SwitchEntity):
-    """A switch to turn the system into heater mode."""
-
-    def __init__(self, ip_address, name):
-        super().__init__(ip_address, name)
-        self._attr_name = name + " Heater Mode Switch"
-        self._is_on = False
-
-    @property
-    def icon(self):
-        """Return the icon to use in the frontend for this device."""
-        if self.is_on:
-            return "mdi:fire"
-        return "mdi:fire-off"
-
-    @property
-    def is_on(self):
-        return self._system.get_stored_status().mode == RinnaiSystemMode.HEATING
-
-    @property
-    def available(self):
-        return (
-            RinnaiCapabilities.HEATER in self._system.get_stored_status().capabilities
-        )
-
-    async def async_turn_on(self, **kwargs):
-        if not self._system.get_stored_status().mode == RinnaiSystemMode.HEATING:
-            await self._system.set_heater_mode()
-
-    async def async_turn_off(self, **kwargs):
-        """Turning it off does nothing"""
-        pass  # pylint: disable=unnecessary-pass
-
-
-class RinnaiEvapModeSwitch(RinnaiExtraEntity, SwitchEntity):
-    """A switch to turn the system into evap mode."""
-
-    def __init__(self, ip_address, name):
-        super().__init__(ip_address, name)
-        self._attr_name = name + " Evap Mode Switch"
-        self._is_on = False
-
-    @property
-    def icon(self):
-        """Return the icon to use in the frontend for this device."""
-        if self.is_on:
-            return "mdi:water-outline"
-        return "mdi:water-off-outline"
-
-    @property
-    def is_on(self):
-        return self._system.get_stored_status().mode == RinnaiSystemMode.EVAP
-
-    @property
-    def available(self):
-        return RinnaiCapabilities.EVAP in self._system.get_stored_status().capabilities
-
-    async def async_turn_on(self, **kwargs):
-        if not self._system.get_stored_status().mode == RinnaiSystemMode.EVAP:
-            await self._system.set_evap_mode()
-
-    async def async_turn_off(self, **kwargs):
-        """Turning it off does nothing"""
-        pass  # pylint: disable=unnecessary-pass
 
 
 class RinnaiZoneSwitch(RinnaiExtraEntity, SwitchEntity):
@@ -430,6 +333,102 @@ class RinnaiAutoSwitch(RinnaiExtraEntity, SwitchEntity):
                 await self._system.set_unit_manual()
             if state.mode == RinnaiSystemMode.EVAP:
                 await self._system.set_unit_manual()
+
+
+class RinnaiAdvanceSwitch(RinnaiExtraEntity, SwitchEntity):
+    """Advance or restore the unit's active schedule period."""
+
+    def __init__(self, ip_address, name):
+        super().__init__(ip_address, name)
+        self._attr_name = name + " Advance"
+
+    @property
+    def icon(self):
+        """Return an icon reflecting whether advance is active."""
+        if self.is_on:
+            return "mdi:calendar-check"
+        return "mdi:calendar-arrow-right"
+
+    @property
+    def available(self):
+        state: RinnaiSystemStatus = self._system.get_stored_status()
+        return bool(
+            state.system_on
+            and state.mode
+            in (RinnaiSystemMode.HEATING, RinnaiSystemMode.COOLING)
+            and state.unit_status.operating_mode == RinnaiOperatingMode.AUTO
+        )
+
+    @property
+    def is_on(self):
+        return bool(
+            self.available
+            and self._system.get_stored_status().unit_status.advanced
+        )
+
+    async def async_turn_on(self, **kwargs):
+        """Advance to the next schedule period."""
+        if self.available and not self.is_on:
+            await self._system.unit_advance()
+
+    async def async_turn_off(self, **kwargs):
+        """Cancel advance and restore the normal schedule."""
+        if self.available and self.is_on:
+            await self._system.unit_advance_cancel()
+
+
+class RinnaiZoneAdvanceSwitch(RinnaiExtraEntity, SwitchEntity):
+    """Advance or restore a zone's active schedule period."""
+
+    def __init__(self, ip_address, zone, name):
+        super().__init__(ip_address, name)
+        self._attr_zone = zone
+        self._attr_name = (
+            f"{name} {zone_display_name(self._system, zone)} Advance"
+        )
+        self._attr_unique_id = (
+            str.lower(self.__class__.__name__)
+            + "_"
+            + zone
+            + str.replace(ip_address, ".", "_")
+        )
+
+    @property
+    def icon(self):
+        """Return an icon reflecting whether advance is active."""
+        if self.is_on:
+            return "mdi:calendar-check"
+        return "mdi:calendar-arrow-right"
+
+    @property
+    def available(self):
+        state: RinnaiSystemStatus = self._system.get_stored_status()
+        return bool(
+            state.system_on
+            and state.mode
+            in (RinnaiSystemMode.HEATING, RinnaiSystemMode.COOLING)
+            and self._attr_zone in state.unit_status.zones
+            and state.unit_status.zones[self._attr_zone].auto_mode
+        )
+
+    @property
+    def is_on(self):
+        return bool(
+            self.available
+            and self._system.get_stored_status()
+            .unit_status.zones[self._attr_zone]
+            .advanced
+        )
+
+    async def async_turn_on(self, **kwargs):
+        """Advance to the zone's next schedule period."""
+        if self.available and not self.is_on:
+            await self._system.set_unit_zone_advance(self._attr_zone)
+
+    async def async_turn_off(self, **kwargs):
+        """Cancel advance and restore the zone's normal schedule."""
+        if self.available and self.is_on:
+            await self._system.unit_zone_advance_cancel(self._attr_zone)
 
 
 class RinnaiCircFanSwitch(RinnaiExtraEntity, SwitchEntity):
