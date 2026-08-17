@@ -1,13 +1,25 @@
 {
   "config": {
     "step": {
-      "confirm": {
-        "description": "Do you want to set up a Rinnai Touch Wifi device?"
+      "user": {
+        "title": "Connect to Rinnai Touch",
+        "description": "Enter the bridge address. Installed zones and MTSP/SSP topology are detected automatically.",
+        "data": {
+          "host": "Hostname or IP",
+          "name": "Name",
+          "external_temperature_sensor": "Main external temperature entity",
+          "external_temperature_sensor_a": "Zone A external temperature entity",
+          "external_temperature_sensor_b": "Zone B external temperature entity",
+          "external_temperature_sensor_c": "Zone C external temperature entity",
+          "external_temperature_sensor_d": "Zone D external temperature entity"
+        }
       }
     },
     "abort": {
-      "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]",
-      "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]"
+      "already_configured": "This bridge is already configured"
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the Wi-Fi Touch bridge and receive a valid status"
     }
   }
 }

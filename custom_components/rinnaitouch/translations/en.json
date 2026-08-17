@@ -1,33 +1,27 @@
 {
     "config": {
         "abort": {
-            "no_devices_found": "No devices found on the network",
-            "single_instance_allowed": "Already configured. Only a single configuration possible."
+            "already_configured": "This bridge is already configured"
         },
         "error": {
-            "unknown": "Unexpected error"
+            "cannot_connect": "Unable to connect to the Wi-Fi Touch bridge and receive a valid status"
         },
         "step": {
             "confirm": {
                 "description": "Do you want to set up a Rinnai Touch Wifi?"
             },
             "user": {
+              "title": "Connect to Rinnai Touch",
               "data": {
                 "host": "Hostname or IP",
                 "name": "Name",
-                "external_temperature_sensor": "Entity name of a temperature sensor to use (for NC3 or NC6)",
-                "Zone A": "Zone A is installed",
-                "external_temperature_sensor_a": "Entity name of a temperature sensor in zone A",
-                "Zone B": "Zone B is installed",
-                "external_temperature_sensor_b": "Entity name of a temperature sensor in zone B",
-                "Zone C": "Zone C is installed",
-                "external_temperature_sensor_c": "Entity name of a temperature sensor in zone C",
-                "Zone D": "Zone D is installed",
-                "external_temperature_sensor_d": "Entity name of a temperature sensor in zone D",
-                "Common Zone": "Common Zone is installed",
-                "external_temperature_sensor_common": "Entity name of a temperature sensor for the common zone"
+                "external_temperature_sensor": "Main external temperature entity",
+                "external_temperature_sensor_a": "Zone A external temperature entity",
+                "external_temperature_sensor_b": "Zone B external temperature entity",
+                "external_temperature_sensor_c": "Zone C external temperature entity",
+                "external_temperature_sensor_d": "Zone D external temperature entity"
               },
-                    "description": "Please enter a hostname or IP address and name for your device"
+                    "description": "Enter the bridge address. Installed zones and MTSP/SSP topology are detected automatically."
             }
         }
     }

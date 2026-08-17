@@ -2,21 +2,36 @@
 
 # pylint: disable=duplicate-code
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+import voluptuous as vol
+
+from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.const import CONF_HOST, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers import config_validation as cv, service
 from homeassistant.const import Platform
 from homeassistant.helpers.device_registry import DeviceEntry
+from homeassistant.helpers.dispatcher import dispatcher_send
 
-from pyrinnaitouch import RinnaiSystem
+from pyrinnaitouch import RinnaiCapabilities, RinnaiSystem, RinnaiTopology
 
-from .const import DOMAIN
+from .const import DOMAIN, SERVICE_SET_TIME, SET_DATETIME
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def update_signal(host: str) -> str:
+    """Return the dispatcher signal used for status updates from one bridge."""
+    return f"{DOMAIN}_{host}_status_update"
+
+
+def connection_signal(host: str) -> str:
+    """Return the dispatcher signal used for connection updates from one bridge."""
+    return f"{DOMAIN}_{host}_connection_update"
+
 
 PLATFORMS = [
     Platform.CLIMATE,
@@ -28,28 +43,45 @@ PLATFORMS = [
 ]
 
 
+async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
+    """Register integration-level entity services."""
+    service.async_register_platform_entity_service(
+        hass,
+        DOMAIN,
+        SERVICE_SET_TIME,
+        entity_domain=CLIMATE_DOMAIN,
+        schema={vol.Optional(SET_DATETIME): cv.datetime},
+        func="set_system_time",
+    )
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up the rinnaitouch integration from a config entry."""
 
     ip_address = entry.data.get(CONF_HOST)
     _LOGGER.debug("Get controller with IP: %s", ip_address)
+    system: RinnaiSystem = RinnaiSystem.get_instance(ip_address)
     try:
-        system: RinnaiSystem = RinnaiSystem.get_instance(ip_address)
-        # scenes = await system.getSupportedScenes()
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, system.shutdown)
-        scenes = []
-        await hass.async_add_executor_job(system.get_status)
-    except (
-        Exception,
-        ConnectionError,
-        ConnectionRefusedError,
-    ) as err:
+        await system.async_get_status()
+    except Exception as err:  # pylint: disable=broad-except
         _LOGGER.error("Get controller error: %s", err)
+        RinnaiSystem.remove_instance(ip_address)
         raise ConfigEntryNotReady from err
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = RinnaiData(
-        system=system, scenes=scenes
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, system.shutdown)
     )
+    data = RinnaiData(
+        hass=hass,
+        host=ip_address,
+        system=system,
+        topology=system.get_topology(),
+        capabilities=system.get_stored_status().capabilities,
+    )
+    data.start()
+    entry.async_on_unload(data.close)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # hass.config_entries.async_setup_platforms(entry, PLATFORMS)
     return True
@@ -60,9 +92,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     ip_address = entry.data.get(CONF_HOST)
     _LOGGER.debug("Removing controller with IP: %s", ip_address)
 
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok:
+        return False
 
+    hass.data[DOMAIN].pop(entry.entry_id)
     RinnaiSystem.remove_instance(ip_address)
     _LOGGER.debug("Controller with IP: %s removed", ip_address)
 
@@ -81,12 +115,75 @@ async def async_remove_config_entry_device(
 class RinnaiData:
     """Data for the Rinnai Touch integration."""
 
+    hass: HomeAssistant
+    host: str
     system: RinnaiSystem
-    scenes: list
+    topology: RinnaiTopology
+    capabilities: RinnaiCapabilities
+    _started: bool = field(default=False, init=False)
 
+    def start(self) -> None:
+        """Bridge library worker-thread callbacks onto the HA event loop."""
+        if self._started:
+            return
+        self.system.subscribe_updates(self._status_updated)
+        self.system.register_socket_state_handler(self._connection_updated)
+        self._started = True
 
-class RinnaiEntity(Entity):
-    """Base entity."""
+    def close(self) -> None:
+        """Detach callbacks registered for this config entry."""
+        if not self._started:
+            return
+        self.system.unsubscribe_updates(self._status_updated)
+        self.system.unregister_socket_state_handler(self._connection_updated)
+        self._started = False
 
-    def __init__(self):
-        pass
+    def _status_updated(self) -> None:
+        dispatcher_send(self.hass, update_signal(self.host))
+
+    def _connection_updated(self, state) -> None:
+        dispatcher_send(self.hass, connection_signal(self.host), state)
+
+    @property
+    def zones(self) -> tuple[str, ...]:
+        """Return all zones discovered from the bridge status."""
+        return tuple(sorted(self.topology.all_observed_zones()))
+
+    @property
+    def thermostat_zones(self) -> tuple[str, ...]:
+        """Return zones that own set points on an MTSP installation."""
+        if not self.topology.multi_set_point:
+            return ()
+        return tuple(zone for zone in self.zones if zone != "U")
+
+    @property
+    def enable_zones(self) -> tuple[str, ...]:
+        """Return zones represented by standalone enable switches."""
+        if self.topology.multi_set_point:
+            return ("U",) if "U" in self.zones and self.has_evap else ()
+        return tuple(zone for zone in self.zones if zone != "U" or self.has_evap)
+
+    @property
+    def temperature_zones(self) -> tuple[str, ...]:
+        """Return zones that report a measured room temperature."""
+        if self.topology.multi_set_point:
+            return self.thermostat_zones
+        if (
+            RinnaiCapabilities.HEATER in self.capabilities
+            or RinnaiCapabilities.COOLER in self.capabilities
+        ):
+            return self.zones
+        return ()
+
+    @property
+    def has_evap(self) -> bool:
+        """Return whether evaporative cooling is installed."""
+        return RinnaiCapabilities.EVAP in self.capabilities
+
+    @property
+    def has_fixed_temperature_unit(self) -> bool:
+        """Return whether heating or refrigerated cooling is installed."""
+        return (
+            RinnaiCapabilities.HEATER in self.capabilities
+            or RinnaiCapabilities.COOLER in self.capabilities
+        )

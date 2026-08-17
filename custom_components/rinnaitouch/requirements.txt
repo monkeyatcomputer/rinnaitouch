@@ -1,4 +1,2 @@
-async_timeout>=3.0.1
-asyncio>=3.4.3
-pyrinnaitouch==0.13.4b1
+pyrinnaitouch@git+https://github.com/monkeyatcomputer/pyrinnaitouch.git@v0.15.0
 homeassistant>=2024.2.0

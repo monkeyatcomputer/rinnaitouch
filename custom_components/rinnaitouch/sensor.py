@@ -12,6 +12,8 @@ from homeassistant.components.sensor import (
 
 from homeassistant.const import UnitOfTemperature
 from homeassistant.const import CONF_NAME, CONF_HOST
+from homeassistant.core import callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from pyrinnaitouch import (
     RinnaiSystem,
@@ -22,13 +24,15 @@ from pyrinnaitouch import (
 )
 
 from .const import (
-    CONF_ZONE_A,
-    CONF_ZONE_B,
-    CONF_ZONE_C,
-    CONF_ZONE_D,
-    CONF_ZONE_COMMON,
     DEFAULT_NAME,
+    DOMAIN,
 )
+from .entity import (
+    RinnaiUpdateMixin,
+    setup_discovered_entities,
+    zone_display_name,
+)
+from . import connection_signal
 
 # _LOGGER = logging.getLogger(__name__)
 
@@ -39,54 +43,42 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
     name = entry.data.get(CONF_NAME)
     if name == "":
         name = DEFAULT_NAME
-    async_add_entities(
-        [
-            RinnaiMainTemperatureSensor(ip_address, name, "temperature"),
-            RinnaiMainTemperatureSensor(ip_address, name, "set_temp"),
-            RinnaiSchedulePeriodSensor(ip_address, name),
-            RinnaiAdvancePeriodSensor(ip_address, name),
-            RinnaiConnectionStateSensor(ip_address, name),
-        ]
+    data = hass.data[DOMAIN][entry.entry_id]
+    entities = [RinnaiConnectionStateSensor(ip_address, name)]
+    if not data.topology.multi_set_point:
+        entities.extend(
+            [
+                RinnaiMainTemperatureSensor(ip_address, name, "temperature"),
+                RinnaiMainTemperatureSensor(ip_address, name, "set_temp"),
+                RinnaiSchedulePeriodSensor(ip_address, name),
+                RinnaiAdvancePeriodSensor(ip_address, name),
+            ]
+        )
+    async_add_entities(entities)
+
+    def zone_entity_factories():
+        for zone in data.temperature_zones:
+            yield (
+                f"zone_temperature_{zone}",
+                lambda zone=zone: RinnaiZoneTemperatureSensor(
+                    ip_address, zone, name, "temperature"
+                ),
+            )
+        for zone in data.thermostat_zones:
+            yield (
+                f"zone_target_temperature_{zone}",
+                lambda zone=zone: RinnaiZoneTemperatureSensor(
+                    ip_address, zone, name, "set_temp"
+                ),
+            )
+
+    setup_discovered_entities(
+        hass, entry, async_add_entities, ip_address, zone_entity_factories
     )
-    if entry.data.get(CONF_ZONE_A):
-        async_add_entities(
-            [
-                RinnaiZoneTemperatureSensor(ip_address, "A", name, "set_temp"),
-                RinnaiZoneTemperatureSensor(ip_address, "A", name, "temperature"),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_B):
-        async_add_entities(
-            [
-                RinnaiZoneTemperatureSensor(ip_address, "B", name, "set_temp"),
-                RinnaiZoneTemperatureSensor(ip_address, "B", name, "temperature"),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_C):
-        async_add_entities(
-            [
-                RinnaiZoneTemperatureSensor(ip_address, "C", name, "set_temp"),
-                RinnaiZoneTemperatureSensor(ip_address, "C", name, "temperature"),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_D):
-        async_add_entities(
-            [
-                RinnaiZoneTemperatureSensor(ip_address, "D", name, "set_temp"),
-                RinnaiZoneTemperatureSensor(ip_address, "D", name, "temperature"),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_COMMON):
-        async_add_entities(
-            [
-                RinnaiZoneTemperatureSensor(ip_address, "U", name, "set_temp"),
-                RinnaiZoneTemperatureSensor(ip_address, "U", name, "temperature"),
-            ]
-        )
     return True
 
 
-class RinnaiTemperatureSensor(SensorEntity):
+class RinnaiTemperatureSensor(RinnaiUpdateMixin, SensorEntity):
     """Representation of a Sensor."""
 
     # pylint: disable=too-many-instance-attributes
@@ -105,15 +97,6 @@ class RinnaiTemperatureSensor(SensorEntity):
         self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
         self._attr_device_class = SensorDeviceClass.TEMPERATURE
         self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._system.subscribe_updates(self.system_updated)
-
-    def system_updated(self):
-        """After system is updated write the new state to HA."""
-        # this very infrequently fails on startup so wrapping in try except
-        try:
-            self.schedule_update_ha_state()
-        except:  # pylint: disable=bare-except
-            pass
 
     @property
     def device_info(self):
@@ -188,10 +171,11 @@ class RinnaiZoneTemperatureSensor(RinnaiTemperatureSensor):
 
     def __init__(self, ip_address, zone, name, temp_attr="temperature"):
         super().__init__(ip_address, name)
+        zone_name = zone_display_name(self._system, zone)
         if temp_attr == "set_temp":
-            self._attr_name = name + " Zone " + zone + " Target Temperature Sensor"
+            self._attr_name = f"{name} {zone_name} Target Temperature Sensor"
         else:
-            self._attr_name = name + " Zone " + zone + " Temperature Sensor"
+            self._attr_name = f"{name} {zone_name} Temperature Sensor"
         self._attr_zone = zone
         self._temp_attr = temp_attr
         device_id = (
@@ -248,7 +232,7 @@ class RinnaiZoneTemperatureSensor(RinnaiTemperatureSensor):
         return self.native_value < 99 and self.native_value > 0
 
 
-class RinnaiPeriodSensor(SensorEntity):
+class RinnaiPeriodSensor(RinnaiUpdateMixin, SensorEntity):
     """Representation of a Sensor."""
 
     def __init__(self, ip_address, name):
@@ -263,15 +247,6 @@ class RinnaiPeriodSensor(SensorEntity):
         self._attr_device_name = name
         self._attr_period = None
 
-        self._system.subscribe_updates(self.system_updated)
-
-    def system_updated(self):
-        """After system is updated write the new state to HA."""
-        # this very infrequently fails on startup so wrapping in try except
-        try:
-            self.schedule_update_ha_state()
-        except:  # pylint: disable=bare-except
-            pass
 
     @property
     def device_info(self):
@@ -368,15 +343,25 @@ class RinnaiConnectionStateSensor(SensorEntity):
         self._attr_name = f"{name} Connection State"
         self._attr_device_name = name
         self._connection_state = None
-        self._system.register_socket_state_handler(self._connection_state_handler)
+        self._connection_state_handler(self._system.get_connection_state())
 
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to centrally dispatched connection updates."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                connection_signal(self._host),
+                self._connection_state_handler,
+            )
+        )
+
+    @callback
     def _connection_state_handler(self, state):
         """Handle connection state updates from pyrinnaitouch."""
-        try:
-            self._connection_state = getattr(state, "name", str(state))
-            self.schedule_update_ha_state()
-        except Exception:  # pylint: disable=broad-except
-            pass
+        self._connection_state = getattr(state, "name", str(state))
+        if self.hass is not None:
+            self.async_write_ha_state()
 
     @property
     def device_info(self):

@@ -11,13 +11,14 @@ from pyrinnaitouch import (
     RinnaiSystemStatus,
 )
 
+from .entity import (
+    RinnaiUpdateMixin,
+    setup_discovered_entities,
+    zone_display_name,
+)
 from .const import (
-    CONF_ZONE_A,
-    CONF_ZONE_B,
-    CONF_ZONE_C,
-    CONF_ZONE_D,
-    CONF_ZONE_COMMON,
     DEFAULT_NAME,
+    DOMAIN,
 )
 
 # _LOGGER = logging.getLogger(__name__)
@@ -31,27 +32,31 @@ async def async_setup_entry(
     name = entry.data.get(CONF_NAME)
     if name == "":
         name = DEFAULT_NAME
-    async_add_entities([RinnaiAdvanceButton(ip_address, name)])
-    if entry.data.get(CONF_ZONE_A):
-        async_add_entities([RinnaiZoneAdvanceButton(ip_address, "A", name)])
-    if entry.data.get(CONF_ZONE_B):
-        async_add_entities([RinnaiZoneAdvanceButton(ip_address, "B", name)])
-    if entry.data.get(CONF_ZONE_C):
-        async_add_entities([RinnaiZoneAdvanceButton(ip_address, "C", name)])
-    if entry.data.get(CONF_ZONE_D):
-        async_add_entities([RinnaiZoneAdvanceButton(ip_address, "D", name)])
-    if entry.data.get(CONF_ZONE_COMMON):
-        async_add_entities(
-            [
-                RinnaiZoneAdvanceButton(
-                    ip_address, "U", name + " Common Zone Advance Button"
-                )
-            ]
-        )
+    data = hass.data[DOMAIN][entry.entry_id]
+    entities = []
+    if (
+        not data.topology.multi_set_point
+        and data.has_fixed_temperature_unit
+    ):
+        entities.append(RinnaiAdvanceButton(ip_address, name))
+    async_add_entities(entities)
+    setup_discovered_entities(
+        hass,
+        entry,
+        async_add_entities,
+        ip_address,
+        lambda: (
+            (
+                f"zone_advance_{zone}",
+                lambda zone=zone: RinnaiZoneAdvanceButton(ip_address, zone, name),
+            )
+            for zone in data.thermostat_zones
+        ),
+    )
     return True
 
 
-class RinnaiButtonEntity(ButtonEntity):
+class RinnaiButtonEntity(RinnaiUpdateMixin, ButtonEntity):
     """Base class button entity to set up naming and system."""
 
     def __init__(self, ip_address, name):
@@ -64,15 +69,6 @@ class RinnaiButtonEntity(ButtonEntity):
         self._attr_unique_id = device_id
         self._attr_name = name
         self._attr_device_name = name
-        self._system.subscribe_updates(self.system_updated)
-
-    def system_updated(self):
-        """After system is updated write the new state to HA."""
-        # this very infrequently fails on startup so wrapping in try except
-        try:
-            self.schedule_update_ha_state()
-        except:  # pylint: disable=bare-except
-            pass
 
     @property
     def device_info(self):
@@ -132,7 +128,9 @@ class RinnaiZoneAdvanceButton(RinnaiButtonEntity):
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, name)
         self._attr_zone = zone
-        self._attr_name = name + " Zone " + zone + " Advance Button"
+        self._attr_name = (
+            f"{name} {zone_display_name(self._system, zone)} Advance Button"
+        )
         device_id = (
             str.lower(self.__class__.__name__)
             + "_"

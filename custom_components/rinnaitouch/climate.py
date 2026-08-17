@@ -20,11 +20,8 @@ COOLING_COOL -> Refrigerated mode
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta
 import logging
-
-import voluptuous as vol
 
 from homeassistant.components.climate import (
     ClimateEntity,
@@ -38,13 +35,6 @@ from homeassistant.const import (
     CONF_NAME,
     UnitOfTemperature,
 )
-from homeassistant.helpers import (
-    config_validation as cv,
-    device_registry as dr,
-    entity_platform,
-    entity_registry as er,
-)
-from homeassistant.helpers.entity_registry import async_entries_for_device
 
 from pyrinnaitouch import (
     TEMP_FAHRENHEIT,
@@ -60,42 +50,28 @@ from .const import (
     CONF_TEMP_SENSOR_A,
     CONF_TEMP_SENSOR_B,
     CONF_TEMP_SENSOR_C,
-    CONF_TEMP_SENSOR_COMMON,
     CONF_TEMP_SENSOR_D,
-    CONF_ZONE_A,
-    CONF_ZONE_B,
-    CONF_ZONE_C,
-    CONF_ZONE_COMMON,
-    CONF_ZONE_D,
     COOLING_COOL,
     COOLING_EVAP,
     COOLING_NONE,
     DEFAULT_NAME,
+    DOMAIN,
     PRESET_AUTO,
     PRESET_MANUAL,
-    SET_DATETIME,
+)
+from homeassistant.core import callback
+from .entity import (
+    RinnaiUpdateMixin,
+    setup_discovered_entities,
+    zone_display_name,
 )
 
 
-SUPPORT_FLAGS_MAIN = (
-    ClimateEntityFeature.TARGET_TEMPERATURE
-    | ClimateEntityFeature.PRESET_MODE
-    | ClimateEntityFeature.TURN_OFF
-    | ClimateEntityFeature.TURN_ON
-)
-SUPPORT_FLAGS_ZONE = (
-    ClimateEntityFeature.TARGET_TEMPERATURE
-    | ClimateEntityFeature.PRESET_MODE
-    | ClimateEntityFeature.TURN_OFF
-    | ClimateEntityFeature.TURN_ON
-)
+SUPPORT_FLAGS_ON_OFF = ClimateEntityFeature.TURN_OFF | ClimateEntityFeature.TURN_ON
 
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(seconds=5)
-
-SERVICE_SET_TIME = "rinnai_set_time"
-
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up climate entities."""
@@ -108,40 +84,37 @@ async def async_setup_entry(hass, entry, async_add_entities):
     temperature_entity_b = entry.data.get(CONF_TEMP_SENSOR_B)
     temperature_entity_c = entry.data.get(CONF_TEMP_SENSOR_C)
     temperature_entity_d = entry.data.get(CONF_TEMP_SENSOR_D)
-    temperature_entity_common = entry.data.get(CONF_TEMP_SENSOR_COMMON)
+    zone_temperature_entities = {
+        "A": temperature_entity_a,
+        "B": temperature_entity_b,
+        "C": temperature_entity_c,
+        "D": temperature_entity_d,
+    }
+    data = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([RinnaiTouch(hass, ip_address, name, temperature_entity)])
-    if entry.data.get(CONF_ZONE_A):
-        async_add_entities(
-            [RinnaiTouchZone(hass, ip_address, name, "A", temperature_entity_a)]
-        )
-    if entry.data.get(CONF_ZONE_B):
-        async_add_entities(
-            [RinnaiTouchZone(hass, ip_address, name, "B", temperature_entity_b)]
-        )
-    if entry.data.get(CONF_ZONE_C):
-        async_add_entities(
-            [RinnaiTouchZone(hass, ip_address, name, "C", temperature_entity_c)]
-        )
-    if entry.data.get(CONF_ZONE_D):
-        async_add_entities(
-            [RinnaiTouchZone(hass, ip_address, name, "D", temperature_entity_d)]
-        )
-    if entry.data.get(CONF_ZONE_COMMON):
-        async_add_entities(
-            [RinnaiTouchZone(hass, ip_address, name, "U", temperature_entity_common)]
-        )
-    platform = entity_platform.async_get_current_platform()
-    platform.async_register_entity_service(
-        SERVICE_SET_TIME,
-        {
-            vol.Optional(SET_DATETIME): cv.datetime,
-        },
-        "set_system_time",
+    setup_discovered_entities(
+        hass,
+        entry,
+        async_add_entities,
+        ip_address,
+        lambda: (
+            (
+                f"zone_climate_{zone}",
+                lambda zone=zone: RinnaiTouchZone(
+                    hass,
+                    ip_address,
+                    name,
+                    zone,
+                    zone_temperature_entities.get(zone),
+                ),
+            )
+            for zone in data.thermostat_zones
+        ),
     )
     return True
 
 
-class RinnaiTouch(ClimateEntity):
+class RinnaiTouch(RinnaiUpdateMixin, ClimateEntity):
     """Main climate entity for the unit."""
 
     # pylint: disable=too-many-instance-attributes,too-many-public-methods
@@ -156,139 +129,36 @@ class RinnaiTouch(ClimateEntity):
         self._attr_device_name = name
 
         self._hass = hass
-        self._attr_first_update = True
         self._temerature_entity_name = temperature_entity
         self._sensor_temperature = 0
         self.update_external_temperature()
 
-        self._support_flags = SUPPORT_FLAGS_MAIN
         self._enable_turn_on_off_backwards_compatibility = False
 
         self._TEMPERATURE_STEP = 1
         self._TEMPERATURE_LIMITS = {"min": 8, "max": 30}
         self._COMFORT_LIMITS = {"min": 19, "max": 34}
         self._FAN_LIMITS = {"min": 0, "max": 16}
-        self._system.subscribe_updates(self.system_updated)
-
+    @callback
     def system_updated(self):
         """After system is updated write the new state to HA."""
         self.update_external_temperature()
-        # this very infrequently fails on startup so wrapping in try except
-        try:
-            if self._attr_first_update:
-                self.remove_irrelevant_entities()
-
-            self._attr_first_update = False
-            self.schedule_update_ha_state()
-        except:  # pylint: disable=bare-except
-            pass
-
-    def remove_irrelevant_entities(self):
-        """After first update remove irrelevant entities."""
-        device_registry = dr.async_get(self.hass)
-        entity_registry = er.async_get(self.hass)
-
-        device = device_registry.async_get_device({("rinnai_touch", self._host)}, set())
-
-        if device is None:
-            _LOGGER.warning("Got entities for unknown device : %s", self._host)
-            return
-
-        devices_to_remove = []
-
-        for entry in async_entries_for_device(
-            entity_registry, device.id, include_disabled_entities=True
-        ):
-            if (
-                RinnaiCapabilities.COOLER
-                not in self._system.get_stored_status().capabilities
-            ):  # pylint: disable=too-many-boolean-expressions
-                if (
-                    (
-                        entry.domain == "switch"
-                        and "cooling_mode" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "binary_sensor"
-                        and "calling_cool" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "binary_sensor"
-                        and "compressor_active" in entry.entity_id.lower()
-                    )
-                ):
-                    devices_to_remove.append(entry)
-
-            if (
-                RinnaiCapabilities.HEATER
-                not in self._system.get_stored_status().capabilities
-            ):  # pylint: disable=too-many-boolean-expressions
-                if (
-                    (
-                        entry.domain == "switch"
-                        and "heater_mode" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "binary_sensor"
-                        and "calling_heat" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "binary_sensor"
-                        and "gas_valve_active" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "binary_sensor"
-                        and "preheating" in entry.entity_id.lower()
-                    )
-                ):
-                    devices_to_remove.append(entry)
-
-            if (
-                RinnaiCapabilities.EVAP
-                not in self._system.get_stored_status().capabilities
-            ):  # pylint: disable=too-many-boolean-expressions
-                if (
-                    (
-                        entry.domain == "switch"
-                        and "evap_mode" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "switch"
-                        and "evap_fan" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "switch"
-                        and "water_pump" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "binary_sensor"
-                        and "cooler_busy" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "binary_sensor"
-                        and "pump_operating" in entry.entity_id.lower()
-                    )
-                    or (
-                        entry.domain == "binary_sensor"
-                        and "prewetting" in entry.entity_id.lower()
-                    )
-                ):
-                    devices_to_remove.append(entry)
-
-        asyncio.run_coroutine_threadsafe(
-            self.remove_devices(entity_registry, devices_to_remove), self.hass.loop
-        )
-
-    async def remove_devices(self, entity_registry, devices_to_remove):
-        """Async helper to remove entities from registry."""
-        for entry in devices_to_remove:
-            _LOGGER.debug("Removing entity: %s %s", entry.platform, entry.entity_id)
-            entity_registry.async_remove(entry.entity_id)
+        self.async_write_ha_state()
 
     @property
     def supported_features(self):
         """Return the list of supported features."""
-        return self._support_flags
+        state = self._system.get_stored_status()
+        features = SUPPORT_FLAGS_ON_OFF
+        if (
+            not state.is_multi_set_point
+            or state.mode == RinnaiSystemMode.EVAP
+            or self.hvac_mode == HVACMode.FAN_ONLY
+        ):
+            features |= ClimateEntityFeature.TARGET_TEMPERATURE
+        if not state.is_multi_set_point or state.mode == RinnaiSystemMode.EVAP:
+            features |= ClimateEntityFeature.PRESET_MODE
+        return features
 
     @property
     def should_poll(self):
@@ -358,10 +228,16 @@ class RinnaiTouch(ClimateEntity):
     def target_temperature(self):
         """Return the temperature we try to reach."""
         # pylint: disable=too-many-return-statements
+        state: RinnaiSystemStatus = self._system.get_stored_status()
+        if (
+            state.is_multi_set_point
+            and state.mode != RinnaiSystemMode.EVAP
+            and self.hvac_mode != HVACMode.FAN_ONLY
+        ):
+            return None
         if self.hvac_mode == HVACMode.OFF:
             return 0
 
-        state: RinnaiSystemStatus = self._system.get_stored_status()
         if self.cooling_mode == COOLING_COOL:
             if self.hvac_mode == HVACMode.FAN_ONLY:
                 return state.unit_status.fan_speed
@@ -445,6 +321,9 @@ class RinnaiTouch(ClimateEntity):
 
     async def async_set_preset_mode(self, preset_mode):
         """Set new target preset mode."""
+        state = self._system.get_stored_status()
+        if state.is_multi_set_point and state.mode != RinnaiSystemMode.EVAP:
+            raise ValueError("Preset mode is controlled by each zone on MTSP systems")
         if not preset_mode == self.preset_mode:
             if preset_mode == PRESET_AUTO:
                 await self._system.set_unit_auto()
@@ -470,6 +349,13 @@ class RinnaiTouch(ClimateEntity):
 
     async def async_set_target_temperature(self, target_temperature):
         """Set the target temperature, fan speed or comfort level."""
+        state = self._system.get_stored_status()
+        if (
+            state.is_multi_set_point
+            and state.mode != RinnaiSystemMode.EVAP
+            and self.hvac_mode != HVACMode.FAN_ONLY
+        ):
+            raise ValueError("Target temperature is controlled by each MTSP zone")
         target_temperature = int(round(target_temperature))
 
         if not self.min_temp <= target_temperature <= self.max_temp:
@@ -651,12 +537,11 @@ class RinnaiTouch(ClimateEntity):
 
     async def async_will_remove_from_hass(self):
         """Disconnect from the device."""
-        # Doesn't seem to be needed here, as the ha_stop event already shuts down the client
-        # self._system.shutdown(None)
+        await super().async_will_remove_from_hass()
         _LOGGER.debug("removing entity from hass")
 
 
-class RinnaiTouchZone(ClimateEntity):
+class RinnaiTouchZone(RinnaiUpdateMixin, ClimateEntity):
     """Climate entity for a zone."""
 
     # pylint: disable=too-many-instance-attributes,too-many-public-methods
@@ -671,9 +556,7 @@ class RinnaiTouchZone(ClimateEntity):
         self._host = ip_address
 
         self._attr_unique_id = device_id
-        self._attr_name = name + " Zone " + zone
-        if zone == "U":
-            self._attr_name = name + "Common Zone"
+        self._attr_name = f"{name} {zone_display_name(self._system, zone)}"
         self._attr_zone = zone
         self._attr_device_name = name
 
@@ -684,25 +567,20 @@ class RinnaiTouchZone(ClimateEntity):
         self._last_set_temp = 20
         self.update_external_temperature()
 
-        self._support_flags = SUPPORT_FLAGS_ZONE
         self._enable_turn_on_off_backwards_compatibility = False
 
         self._TEMPERATURE_STEP = 1
         self._TEMPERATURE_LIMITS = {"min": 8, "max": 30}
-        self._system.subscribe_updates(self.system_updated)
-
-    def system_updated(self):
-        """After system is updated write the new state to HA."""
-        # this very infrequently fails on startup so wrapping in try except
-        try:
-            self.schedule_update_ha_state()
-        except:  # pylint: disable=bare-except
-            pass
-
     @property
     def supported_features(self):
         """Return the list of supported features."""
-        return self._support_flags
+        features = SUPPORT_FLAGS_ON_OFF | ClimateEntityFeature.PRESET_MODE
+        if (
+            self._system.get_stored_status().mode != RinnaiSystemMode.EVAP
+            and self.hvac_mode != HVACMode.FAN_ONLY
+        ):
+            features |= ClimateEntityFeature.TARGET_TEMPERATURE
+        return features
 
     @property
     def should_poll(self):
@@ -773,6 +651,8 @@ class RinnaiTouchZone(ClimateEntity):
         """Return the temperature we try to reach."""
         # pylint: disable=too-many-return-statements,too-many-branches
         state: RinnaiSystemStatus = self._system.get_stored_status()
+        if state.mode == RinnaiSystemMode.EVAP:
+            return None
         if (
             state.is_multi_set_point
             and self._attr_zone in state.unit_status.zones.keys()
@@ -919,7 +799,10 @@ class RinnaiTouchZone(ClimateEntity):
     # not common
     async def async_set_target_temperature(self, target_temperature):
         """Set the new target temperate in a zone."""
-        if self._system.get_stored_status().is_multi_set_point:
+        state = self._system.get_stored_status()
+        if state.mode == RinnaiSystemMode.EVAP:
+            raise ValueError("Evaporative zones do not have temperature set points")
+        if state.is_multi_set_point:
             target_temperature = int(round(target_temperature))
 
             if not self.min_temp <= target_temperature <= self.max_temp:

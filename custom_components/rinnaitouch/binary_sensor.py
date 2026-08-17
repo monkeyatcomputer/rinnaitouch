@@ -3,16 +3,25 @@
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.const import CONF_NAME, CONF_HOST
+from homeassistant.core import callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from pyrinnaitouch import RinnaiSystem, RinnaiSystemMode, RinnaiSystemStatus
-from .const import (
-    CONF_ZONE_A,
-    CONF_ZONE_B,
-    CONF_ZONE_C,
-    CONF_ZONE_D,
-    CONF_ZONE_COMMON,
-    DEFAULT_NAME,
+from pyrinnaitouch import (
+    RinnaiCapabilities,
+    RinnaiSystem,
+    RinnaiSystemMode,
+    RinnaiSystemStatus,
 )
+from .const import (
+    DEFAULT_NAME,
+    DOMAIN,
+)
+from .entity import (
+    RinnaiUpdateMixin,
+    setup_discovered_entities,
+    zone_display_name,
+)
+from . import connection_signal
 
 # _LOGGER = logging.getLogger(__name__)
 
@@ -23,80 +32,72 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
     name = entry.data.get(CONF_NAME)
     if name == "":
         name = DEFAULT_NAME
-    async_add_entities(
-        [
-            RinnaiConnectedBinarySensorEntity(ip_address, name),
-            RinnaiPreheatBinarySensorEntity(ip_address, name),
-            RinnaiGasValveBinarySensorEntity(ip_address, name),
-            RinnaiCallingHeatBinarySensorEntity(ip_address, name),
-            RinnaiCompressorBinarySensorEntity(ip_address, name),
-            RinnaiCallingCoolBinarySensorEntity(ip_address, name),
-            RinnaiPrewetBinarySensorEntity(ip_address, name),
-            RinnaiPumpOperatingBinarySensorEntity(ip_address, name),
-            RinnaiCoolerBusyBinarySensorEntity(ip_address, name),
-            RinnaiFanOperatingBinarySensorEntity(ip_address, name),
-            RinnaiTimeSettingSensorEntity(ip_address, name),
-        ]
+    data = hass.data[DOMAIN][entry.entry_id]
+    entities = [
+        RinnaiConnectedBinarySensorEntity(ip_address, name),
+        RinnaiFanOperatingBinarySensorEntity(ip_address, name),
+        RinnaiTimeSettingSensorEntity(ip_address, name),
+    ]
+    if RinnaiCapabilities.HEATER in data.capabilities:
+        entities.extend(
+            [
+                RinnaiPreheatBinarySensorEntity(ip_address, name),
+                RinnaiGasValveBinarySensorEntity(ip_address, name),
+                RinnaiCallingHeatBinarySensorEntity(ip_address, name),
+            ]
+        )
+    if RinnaiCapabilities.COOLER in data.capabilities:
+        entities.extend(
+            [
+                RinnaiCompressorBinarySensorEntity(ip_address, name),
+                RinnaiCallingCoolBinarySensorEntity(ip_address, name),
+            ]
+        )
+    if data.has_evap:
+        entities.extend(
+            [
+                RinnaiPrewetBinarySensorEntity(ip_address, name),
+                RinnaiPumpOperatingBinarySensorEntity(ip_address, name),
+                RinnaiCoolerBusyBinarySensorEntity(ip_address, name),
+            ]
+        )
+    zone_entity_types = [RinnaiZoneFanOperatingBinarySensorEntity]
+    if RinnaiCapabilities.HEATER in data.capabilities:
+        zone_entity_types.extend(
+            [
+                RinnaiZonePreheatBinarySensorEntity,
+                RinnaiZoneGasValveBinarySensorEntity,
+                RinnaiZoneCallingHeatBinarySensorEntity,
+            ]
+        )
+    if RinnaiCapabilities.COOLER in data.capabilities:
+        zone_entity_types.extend(
+            [
+                RinnaiZoneCompressorBinarySensorEntity,
+                RinnaiZoneCallingCoolBinarySensorEntity,
+            ]
+        )
+    async_add_entities(entities)
+    setup_discovered_entities(
+        hass,
+        entry,
+        async_add_entities,
+        ip_address,
+        lambda: (
+            (
+                f"{entity_type.__name__}_{zone}",
+                lambda zone=zone, entity_type=entity_type: entity_type(
+                    ip_address, zone, name
+                ),
+            )
+            for zone in data.thermostat_zones
+            for entity_type in zone_entity_types
+        ),
     )
-    if entry.data.get(CONF_ZONE_A):
-        async_add_entities(
-            [
-                RinnaiZonePreheatBinarySensorEntity(ip_address, "A", name),
-                RinnaiZoneGasValveBinarySensorEntity(ip_address, "A", name),
-                RinnaiZoneCallingHeatBinarySensorEntity(ip_address, "A", name),
-                RinnaiZoneCompressorBinarySensorEntity(ip_address, "A", name),
-                RinnaiZoneCallingCoolBinarySensorEntity(ip_address, "A", name),
-                RinnaiZoneFanOperatingBinarySensorEntity(ip_address, "A", name),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_B):
-        async_add_entities(
-            [
-                RinnaiZonePreheatBinarySensorEntity(ip_address, "B", name),
-                RinnaiZoneGasValveBinarySensorEntity(ip_address, "B", name),
-                RinnaiZoneCallingHeatBinarySensorEntity(ip_address, "B", name),
-                RinnaiZoneCompressorBinarySensorEntity(ip_address, "B", name),
-                RinnaiZoneCallingCoolBinarySensorEntity(ip_address, "B", name),
-                RinnaiZoneFanOperatingBinarySensorEntity(ip_address, "B", name),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_C):
-        async_add_entities(
-            [
-                RinnaiZonePreheatBinarySensorEntity(ip_address, "C", name),
-                RinnaiZoneGasValveBinarySensorEntity(ip_address, "C", name),
-                RinnaiZoneCallingHeatBinarySensorEntity(ip_address, "C", name),
-                RinnaiZoneCompressorBinarySensorEntity(ip_address, "C", name),
-                RinnaiZoneCallingCoolBinarySensorEntity(ip_address, "C", name),
-                RinnaiZoneFanOperatingBinarySensorEntity(ip_address, "C", name),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_D):
-        async_add_entities(
-            [
-                RinnaiZonePreheatBinarySensorEntity(ip_address, "D", name),
-                RinnaiZoneGasValveBinarySensorEntity(ip_address, "D", name),
-                RinnaiZoneCallingHeatBinarySensorEntity(ip_address, "D", name),
-                RinnaiZoneCompressorBinarySensorEntity(ip_address, "D", name),
-                RinnaiZoneCallingCoolBinarySensorEntity(ip_address, "D", name),
-                RinnaiZoneFanOperatingBinarySensorEntity(ip_address, "D", name),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_COMMON):
-        async_add_entities(
-            [
-                RinnaiZonePreheatBinarySensorEntity(ip_address, "U", name),
-                RinnaiZoneGasValveBinarySensorEntity(ip_address, "U", name),
-                RinnaiZoneCallingHeatBinarySensorEntity(ip_address, "U", name),
-                RinnaiZoneCompressorBinarySensorEntity(ip_address, "U", name),
-                RinnaiZoneCallingCoolBinarySensorEntity(ip_address, "U", name),
-                RinnaiZoneFanOperatingBinarySensorEntity(ip_address, "U", name),
-            ]
-        )
     return True
 
 
-class RinnaiBinarySensorEntity(BinarySensorEntity):
+class RinnaiBinarySensorEntity(RinnaiUpdateMixin, BinarySensorEntity):
     """Base class for all binary sensor entities setting up names and system instance."""
 
     def __init__(self, ip_address, name) -> None:
@@ -109,15 +110,6 @@ class RinnaiBinarySensorEntity(BinarySensorEntity):
         self._attr_unique_id = device_id
         self._attr_name = name + " Binary Sensor"
         self._attr_device_name = name
-        self._system.subscribe_updates(self.system_updated)
-
-    def system_updated(self):
-        """After system is updated write the new state to HA."""
-        # this very infrequently fails on startup so wrapping in try except
-        try:
-            self.schedule_update_ha_state()
-        except:  # pylint: disable=bare-except
-            pass
 
     @property
     def device_info(self):
@@ -359,6 +351,7 @@ class RinnaiZoneStateBinarySensorEntity(RinnaiBinarySensorEntity):
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, name)
         self._attr_zone = zone
+        self._attr_zone_name = zone_display_name(self._system, zone)
         device_id = (
             str.lower(self.__class__.__name__)
             + "_"
@@ -404,7 +397,7 @@ class RinnaiZonePreheatBinarySensorEntity(RinnaiZoneStateBinarySensorEntity):
 
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, zone, name)
-        self._attr_name = name + " Zone " + zone + " Preheating Sensor"
+        self._attr_name = f"{name} {self._attr_zone_name} Preheating Sensor"
         self._attr_unit_mode = RinnaiSystemMode.HEATING
         self._attr_status_attr = "preheating"
 
@@ -419,7 +412,7 @@ class RinnaiZoneGasValveBinarySensorEntity(RinnaiZoneStateBinarySensorEntity):
 
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, zone, name)
-        self._attr_name = name + " Zone " + zone + " Gas Valve Active Sensor"
+        self._attr_name = f"{name} {self._attr_zone_name} Gas Valve Active Sensor"
         self._attr_unit_mode = RinnaiSystemMode.HEATING
         self._attr_status_attr = "gas_valve_active"
 
@@ -434,7 +427,7 @@ class RinnaiZoneCallingHeatBinarySensorEntity(RinnaiZoneStateBinarySensorEntity)
 
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, zone, name)
-        self._attr_name = name + " Zone " + zone + " Calling Heat Sensor"
+        self._attr_name = f"{name} {self._attr_zone_name} Calling Heat Sensor"
         self._attr_unit_mode = RinnaiSystemMode.HEATING
         self._attr_status_attr = "calling_for_work"
 
@@ -449,7 +442,7 @@ class RinnaiZoneCompressorBinarySensorEntity(RinnaiZoneStateBinarySensorEntity):
 
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, zone, name)
-        self._attr_name = name + " Zone " + zone + " Compressor Active Sensor"
+        self._attr_name = f"{name} {self._attr_zone_name} Compressor Active Sensor"
         self._attr_unit_mode = RinnaiSystemMode.COOLING
         self._attr_status_attr = "compressor_active"
 
@@ -464,7 +457,7 @@ class RinnaiZoneCallingCoolBinarySensorEntity(RinnaiZoneStateBinarySensorEntity)
 
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, zone, name)
-        self._attr_name = name + " Zone " + zone + " Calling Cool Sensor"
+        self._attr_name = f"{name} {self._attr_zone_name} Calling Cool Sensor"
         self._attr_unit_mode = RinnaiSystemMode.COOLING
         self._attr_status_attr = "calling_for_work"
 
@@ -479,7 +472,7 @@ class RinnaiZoneFanOperatingBinarySensorEntity(RinnaiZoneStateBinarySensorEntity
 
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, zone, name)
-        self._attr_name = name + " Zone " + zone + " Fan Active Sensor"
+        self._attr_name = f"{name} {self._attr_zone_name} Fan Active Sensor"
         self._attr_status_attr = "fan_operating"
 
     @property
@@ -505,19 +498,25 @@ class RinnaiConnectedBinarySensorEntity(RinnaiBinarySensorEntity):
         self._attr_name = name + " Connected Sensor"
         self._attr_unique_id = "connected_" + str.replace(ip_address, ".", "_")
         self._connected = None
+        self._connection_state_handler(self._system.get_connection_state())
 
-        # Subscribe to connection state changes
-        self._system.register_socket_state_handler(self._connection_state_handler)
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to centrally dispatched connection updates."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                connection_signal(self._host),
+                self._connection_state_handler,
+            )
+        )
 
+    @callback
     def _connection_state_handler(self, state):
         """Handle connection state updates from pyrinnaitouch."""
-        # Connected if state is CONNECTED, else not
-        try:
-            # Enum value 3 is CONNECTED, but use name for clarity
-            self._connected = getattr(state, "name", None) == "CONNECTED"
-            self.schedule_update_ha_state()
-        except Exception:  # pylint: disable=broad-except
-            pass
+        self._connected = getattr(state, "name", None) == "CONNECTED"
+        if self.hass is not None:
+            self.async_write_ha_state()
 
     @property
     def is_on(self) -> bool:

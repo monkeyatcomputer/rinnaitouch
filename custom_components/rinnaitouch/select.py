@@ -4,9 +4,10 @@
 from homeassistant.components.select import SelectEntity
 from homeassistant.const import CONF_NAME, CONF_HOST
 
-from pyrinnaitouch import RinnaiSystem, RinnaiOperatingMode
+from pyrinnaitouch import RinnaiOperatingMode, RinnaiSystem, RinnaiSystemMode
 
 from .const import PRESET_AUTO, PRESET_MANUAL, DEFAULT_NAME
+from .entity import RinnaiUpdateMixin
 
 # _LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ async def async_setup_entry(
     return True
 
 
-class RinnaiSelectPresetEntity(SelectEntity):
+class RinnaiSelectPresetEntity(RinnaiUpdateMixin, SelectEntity):
     """A preset select entity."""
 
     def __init__(self, ip_address, name):
@@ -36,15 +37,6 @@ class RinnaiSelectPresetEntity(SelectEntity):
         self._attr_unique_id = device_id
         self._attr_name = name + " Preset Select"
         self._attr_device_name = name
-        self._system.subscribe_updates(self.system_updated)
-
-    def system_updated(self):
-        """After system is updated write the new state to HA."""
-        # this very infrequently fails on startup so wrapping in try except
-        try:
-            self.schedule_update_ha_state()
-        except:  # pylint: disable=bare-except
-            pass
 
     @property
     def device_info(self):
@@ -77,6 +69,12 @@ class RinnaiSelectPresetEntity(SelectEntity):
         ):
             return PRESET_AUTO
         return PRESET_MANUAL
+
+    @property
+    def available(self):
+        """Disable whole-unit schedules while MTSP zones own the schedule."""
+        state = self._system.get_stored_status()
+        return not state.is_multi_set_point or state.mode == RinnaiSystemMode.EVAP
 
     @property
     def options(self):

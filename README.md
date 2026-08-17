@@ -1,22 +1,28 @@
 ﻿# Rinnai/Brivis Touch Wifi HASS integration
 
-![Pylint](https://github.com/funtastix/rinnaitouch/workflows/Pylint/badge.svg)
+![Pylint](https://github.com/monkeyatcomputer/rinnaitouch/workflows/Pylint/badge.svg)
 
-This custom component was originally inspired by the below projects and attempts to create an integration.
+## Fork provenance
 
-[MyTouch](https://github.com/christhehoff/MyTouch)
-[@C-Westin](https://github.com/C-Westin/rinnai_touch_climate)
-[@jerryzou](https://github.com/jerryzou/rinnai_touch_climate)
+This repository, [`monkeyatcomputer/rinnaitouch`](https://github.com/monkeyatcomputer/rinnaitouch), is a direct fork of the original [`funtastix/rinnaitouch`](https://github.com/funtastix/rinnaitouch) Home Assistant integration. It retains the original project's Git history, MIT licence, and contributor attribution. Changes made in this fork build on that work.
 
-Also heavily used the documentation: [NBW2API](https://hvac-api-docs.s3.us-east-2.amazonaws.com/NBW2API_Iss1.3.pdf)
+The original integration credits the following projects as prior art and sources of inspiration. They are acknowledged influences, not the direct GitHub parent of this fork:
+
+- [MyTouch](https://github.com/christhehoff/MyTouch)
+- [C-Westin/rinnai_touch_climate](https://github.com/C-Westin/rinnai_touch_climate)
+- [jerryzou/rinnai_touch_climate](https://github.com/jerryzou/rinnai_touch_climate)
+
+The implementation also relies on Rinnai's [NBW2API Issue 1.3 protocol documentation](https://hvac-api-docs.s3.us-east-2.amazonaws.com/NBW2API_Iss1.3.pdf).
 
 ## :blue_heart: Thanks
 
-Thanks to all the above for the groundwork on this!
+Thank you to the maintainers and contributors of the original integration and the related projects listed above for the groundwork on this project.
 
 ## :flight_departure: Dependencies
 
-This component has a dependency on [pyrinnaitouch](https://github.com/funtastix/pyrinnaitouch) which will be installed automatically by Home Assistant.
+This component depends on the [`monkeyatcomputer/pyrinnaitouch`](https://github.com/monkeyatcomputer/pyrinnaitouch) fork. Home Assistant installs the library directly from the `v0.15.0` Git tag specified in the integration manifest; it does not use the separately published `pyrinnaitouch` package from PyPI.
+
+The matching `pyrinnaitouch` tag must be published before the corresponding integration release. If the tag is missing or inaccessible, Home Assistant cannot install the requirement and the integration will not load.
 
 ## Capabilities
 
@@ -48,6 +54,26 @@ There is support for an external temperature sensor, to avoid having 0 degrees i
 <b>Cooling mode</b> has been tested by other users and seems to work well, as I do not have cooling.
 
 Support for <b>zones</b> has come a long way, but there is still more testing to be done. I don't have zones myself.
+
+## Zone topology
+
+The integration reads the controller's `CFG.MTSP` flag and zone status. You no longer select installed zones during setup.
+
+| Controller setup | Main climate | Zones A-D | Common zone U |
+|---|---|---|---|
+| Single set point (`MTSP=N`) | Owns the temperature target and schedule | Damper on/off switches and temperature sensors | Read-only in heating and refrigerated cooling |
+| Multi set point / ZonePlus (`MTSP=Y`) | Controls system power and HVAC mode | Independent climate entities with set points and schedules | Read-only in heating and refrigerated cooling |
+| Evaporative cooling | Owns comfort level or fan speed | Zone participation controls | Zone participation control when the controller reports U |
+
+The integration adds zone entities when the bridge first reports each zone. A mode change can reveal a different zone list, so the integration keeps the zones seen in earlier modes and adds new entities without a reload. It uses the zone descriptions from the controller for entity names.
+
+Existing config entries can keep their old zone fields. Version 0.14 ignores those fields and uses the bridge status.
+
+## TCP connection
+
+`pyrinnaitouch` maintains one TCP connection per bridge. It reports `CONNECTED` after the bridge sends `*HELLO*` and a valid status frame. The stream parser handles split and combined TCP frames, including sequence rollover from 255 to 0.
+
+Commands use a bounded queue. Each command completes after the bridge returns the matching sequence number. A timeout or disconnect fails the pending command and starts a reconnect with bounded backoff.
 
 ## Further Plans
 

@@ -14,12 +14,13 @@ from pyrinnaitouch import (
 )
 
 from .const import (
-    CONF_ZONE_A,
-    CONF_ZONE_B,
-    CONF_ZONE_C,
-    CONF_ZONE_D,
-    CONF_ZONE_COMMON,
     DEFAULT_NAME,
+    DOMAIN,
+)
+from .entity import (
+    RinnaiUpdateMixin,
+    setup_discovered_entities,
+    zone_display_name,
 )
 
 
@@ -29,57 +30,45 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
     name = entry.data.get(CONF_NAME)
     if name == "":
         name = DEFAULT_NAME
-    async_add_entities(
-        [
-            RinnaiOnOffSwitch(ip_address, name),
-            RinnaiCoolingModeSwitch(ip_address, name),
-            RinnaiHeaterModeSwitch(ip_address, name),
-            RinnaiEvapModeSwitch(ip_address, name),
-            RinnaiWaterpumpSwitch(ip_address, name),
-            RinnaiEvapFanSwitch(ip_address, name),
-            RinnaiCircFanSwitch(ip_address, name),
-            RinnaiAutoSwitch(ip_address, name),
-        ]
+    data = hass.data[DOMAIN][entry.entry_id]
+    entities = [
+        RinnaiOnOffSwitch(ip_address, name),
+        RinnaiCircFanSwitch(ip_address, name),
+        RinnaiAutoSwitch(ip_address, name),
+    ]
+    if RinnaiCapabilities.COOLER in data.capabilities:
+        entities.append(RinnaiCoolingModeSwitch(ip_address, name))
+    if RinnaiCapabilities.HEATER in data.capabilities:
+        entities.append(RinnaiHeaterModeSwitch(ip_address, name))
+    if data.has_evap:
+        entities.extend(
+            [
+                RinnaiEvapModeSwitch(ip_address, name),
+                RinnaiWaterpumpSwitch(ip_address, name),
+                RinnaiEvapFanSwitch(ip_address, name),
+            ]
+        )
+    async_add_entities(entities)
+
+    def zone_entity_factories():
+        for zone in data.enable_zones:
+            yield (
+                f"zone_switch_{zone}",
+                lambda zone=zone: RinnaiZoneSwitch(ip_address, zone, name),
+            )
+            if data.has_evap:
+                yield (
+                    f"zone_auto_switch_{zone}",
+                    lambda zone=zone: RinnaiZoneAutoSwitch(ip_address, zone, name),
+                )
+
+    setup_discovered_entities(
+        hass, entry, async_add_entities, ip_address, zone_entity_factories
     )
-    if entry.data.get(CONF_ZONE_A):
-        async_add_entities(
-            [
-                RinnaiZoneSwitch(ip_address, "A", name),
-                RinnaiZoneAutoSwitch(ip_address, "A", name),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_B):
-        async_add_entities(
-            [
-                RinnaiZoneSwitch(ip_address, "B", name),
-                RinnaiZoneAutoSwitch(ip_address, "B", name),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_C):
-        async_add_entities(
-            [
-                RinnaiZoneSwitch(ip_address, "C", name),
-                RinnaiZoneAutoSwitch(ip_address, "C", name),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_D):
-        async_add_entities(
-            [
-                RinnaiZoneSwitch(ip_address, "D", name),
-                RinnaiZoneAutoSwitch(ip_address, "D", name),
-            ]
-        )
-    if entry.data.get(CONF_ZONE_COMMON):
-        async_add_entities(
-            [
-                RinnaiZoneSwitch(ip_address, "U", name),
-                RinnaiZoneAutoSwitch(ip_address, "U", name),
-            ]
-        )
     return True
 
 
-class RinnaiExtraEntity(Entity):
+class RinnaiExtraEntity(RinnaiUpdateMixin, Entity):
     """Base entity with a name and system update capability."""
 
     def __init__(self, ip_address, name):
@@ -92,15 +81,6 @@ class RinnaiExtraEntity(Entity):
         self._attr_unique_id = device_id
         self._attr_name = name
         self._attr_device_name = name
-        self._system.subscribe_updates(self.system_updated)
-
-    def system_updated(self):
-        """After system is updated write the new state to HA."""
-        # this very infrequently fails on startup so wrapping in try except
-        try:
-            self.schedule_update_ha_state()
-        except:  # pylint: disable=bare-except
-            pass
 
     @property
     def device_info(self):
@@ -266,7 +246,7 @@ class RinnaiZoneSwitch(RinnaiExtraEntity, SwitchEntity):
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, name)
         self._is_on = False
-        self._attr_name = name + " Zone " + zone + " Switch"
+        self._attr_name = f"{name} {zone_display_name(self._system, zone)} Switch"
         self._attr_zone = zone
         self._last_set_temp = 20
         device_id = (
@@ -287,9 +267,8 @@ class RinnaiZoneSwitch(RinnaiExtraEntity, SwitchEntity):
 
     @property
     def available(self):
-        return (
-            self._attr_zone in self._system.get_stored_status().unit_status.zones.keys()
-        )
+        capabilities = self._system.get_zone_capabilities(self._attr_zone)
+        return bool(capabilities and capabilities.can_enable)
 
     @property
     def is_on(self):
@@ -305,7 +284,7 @@ class RinnaiZoneSwitch(RinnaiExtraEntity, SwitchEntity):
         state: RinnaiSystemStatus = self._system.get_stored_status()
         if state.mode == RinnaiSystemMode.EVAP:
             await self._system.turn_evap_zone_on(self._attr_zone)
-        if state.is_multi_set_point:
+        elif state.is_multi_set_point:
             await self._system.set_unit_zone_temp(self._attr_zone, self._last_set_temp)
         else:
             # turn whatever the preset is on and put it into manual mode
@@ -316,7 +295,7 @@ class RinnaiZoneSwitch(RinnaiExtraEntity, SwitchEntity):
         state: RinnaiSystemStatus = self._system.get_stored_status()
         if state.mode == RinnaiSystemMode.EVAP:
             await self._system.turn_evap_zone_off(self._attr_zone)
-        if state.is_multi_set_point:
+        elif state.is_multi_set_point:
             self._last_set_temp = state.unit_status.set_temp
             await self._system.set_unit_zone_temp(self._attr_zone, 0)
         else:
@@ -423,9 +402,10 @@ class RinnaiAutoSwitch(RinnaiExtraEntity, SwitchEntity):
 
     @property
     def available(self):
-        if self._system.get_stored_status().system_on:
-            return True
-        return False
+        state = self._system.get_stored_status()
+        return state.system_on and (
+            not state.is_multi_set_point or state.mode == RinnaiSystemMode.EVAP
+        )
 
     @property
     def is_on(self):
@@ -497,7 +477,9 @@ class RinnaiZoneAutoSwitch(RinnaiExtraEntity, SwitchEntity):
 
     def __init__(self, ip_address, zone, name):
         super().__init__(ip_address, name)
-        self._attr_name = name + " Zone " + zone + " Auto Switch"
+        self._attr_name = (
+            f"{name} {zone_display_name(self._system, zone)} Auto Switch"
+        )
         self._is_on = False
         self._attr_zone = zone
         device_id = (
@@ -519,9 +501,12 @@ class RinnaiZoneAutoSwitch(RinnaiExtraEntity, SwitchEntity):
     @property
     def available(self):
         state: RinnaiSystemStatus = self._system.get_stored_status()
-        if state.system_on and self._attr_zone in state.unit_status.zones.keys():
-            return state.unit_status.operating_mode == RinnaiOperatingMode.AUTO
-        return False
+        capabilities = self._system.get_zone_capabilities(self._attr_zone)
+        return bool(
+            state.system_on
+            and capabilities
+            and capabilities.auto_participation
+        )
 
     @property
     def is_on(self):
