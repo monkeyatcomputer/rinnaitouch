@@ -45,7 +45,7 @@ class RinnaiTouchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             system: RinnaiSystem = RinnaiSystem.get_instance(host)
             try:
-                await system.async_get_status()
+                await system.async_get_status(timeout=45)
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception")
                 RinnaiSystem.remove_instance(host)

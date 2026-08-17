@@ -63,7 +63,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     _LOGGER.debug("Get controller with IP: %s", ip_address)
     system: RinnaiSystem = RinnaiSystem.get_instance(ip_address)
     try:
-        await system.async_get_status()
+        await system.async_get_status(timeout=45)
     except Exception as err:  # pylint: disable=broad-except
         _LOGGER.error("Get controller error: %s", err)
         RinnaiSystem.remove_instance(ip_address)
