@@ -10,13 +10,13 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 
-from homeassistant.const import UnitOfTemperature
-from homeassistant.const import CONF_NAME, CONF_HOST
+from homeassistant.const import CONF_NAME, CONF_HOST, EntityCategory, UnitOfTemperature
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from pyrinnaitouch import (
     RinnaiSystem,
+    RinnaiScheduleDayGroup,
     RinnaiSchedulePeriod,
     RinnaiSystemMode,
     RinnaiOperatingMode,
@@ -44,7 +44,23 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
     if name == "":
         name = DEFAULT_NAME
     data = hass.data[DOMAIN][entry.entry_id]
-    entities = [RinnaiConnectionStateSensor(ip_address, name)]
+    entities = [
+        RinnaiConnectionStateSensor(ip_address, name),
+        RinnaiFirmwareSensor(
+            ip_address,
+            name,
+            "firmware_version",
+            "Controller Firmware",
+            "mdi:chip",
+        ),
+        RinnaiFirmwareSensor(
+            ip_address,
+            name,
+            "wifi_module_version",
+            "Wi-Fi Module Firmware",
+            "mdi:wifi-cog",
+        ),
+    ]
     if not data.topology.multi_set_point:
         entities.extend(
             [
@@ -69,6 +85,18 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
                 f"zone_target_temperature_{zone}",
                 lambda zone=zone: RinnaiZoneTemperatureSensor(
                     ip_address, zone, name, "set_temp"
+                ),
+            )
+            yield (
+                f"zone_schedule_period_{zone}",
+                lambda zone=zone: RinnaiZoneSchedulePeriodSensor(
+                    ip_address, zone, name
+                ),
+            )
+            yield (
+                f"zone_advance_period_{zone}",
+                lambda zone=zone: RinnaiZoneAdvancePeriodSensor(
+                    ip_address, zone, name
                 ),
             )
 
@@ -283,6 +311,20 @@ class RinnaiPeriodSensor(RinnaiUpdateMixin, SensorEntity):
             return self.schedule_period_to_str(state.unit_status)
         return "N/A"
 
+    @property
+    def extra_state_attributes(self):
+        """Expose schedule capabilities reported by the controller."""
+        unit_status = self._system.get_stored_status().unit_status
+        day_group = unit_status.schedule_day_group
+        return {
+            "day_grouping": (
+                day_group.name.lower()
+                if day_group != RinnaiScheduleDayGroup.NONE
+                else "unknown"
+            ),
+            "pre_sleep_enabled": unit_status.pre_sleep_enabled,
+        }
+
     def schedule_period_to_str(self, status) -> str | None:
         """Convert SchedulePeriod to a UI presentable sensor string value."""
         state = getattr(status, self._attr_period)
@@ -331,6 +373,116 @@ class RinnaiAdvancePeriodSensor(RinnaiPeriodSensor):
         if self._system.get_stored_status().unit_status.advanced:
             return super().native_value
         return "N/A"
+
+
+class RinnaiZonePeriodSensor(RinnaiPeriodSensor):
+    """Base sensor for a zone's current schedule period."""
+
+    def __init__(self, ip_address, zone, name):
+        super().__init__(ip_address, name)
+        self._attr_zone = zone
+        self._attr_zone_name = zone_display_name(self._system, zone)
+        self._attr_unique_id = (
+            str.lower(self.__class__.__name__)
+            + "_"
+            + zone
+            + str.replace(ip_address, ".", "_")
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the active period for this zone's automatic schedule."""
+        state = self._system.get_stored_status()
+        if (
+            not state.system_on
+            or state.mode
+            not in (RinnaiSystemMode.COOLING, RinnaiSystemMode.HEATING)
+            or self._attr_zone not in state.unit_status.zones
+        ):
+            return "N/A"
+        zone = state.unit_status.zones[self._attr_zone]
+        if not zone.auto_mode:
+            return "N/A"
+        return self.schedule_period_to_str(zone)
+
+
+class RinnaiZoneSchedulePeriodSensor(RinnaiZonePeriodSensor):
+    """Report the active automatic schedule period for a zone."""
+
+    def __init__(self, ip_address, zone, name):
+        super().__init__(ip_address, zone, name)
+        self._attr_name = f"{name} {self._attr_zone_name} Schedule Period"
+        self._attr_period = "schedule_period"
+
+    @property
+    def icon(self):
+        """Return the schedule icon."""
+        return "mdi:calendar-month"
+
+
+class RinnaiZoneAdvancePeriodSensor(RinnaiZonePeriodSensor):
+    """Report the period selected by a zone schedule advance."""
+
+    def __init__(self, ip_address, zone, name):
+        super().__init__(ip_address, zone, name)
+        self._attr_name = f"{name} {self._attr_zone_name} Advance Period"
+        self._attr_period = "advance_period"
+
+    @property
+    def icon(self):
+        """Return the advance icon."""
+        return "mdi:calendar-arrow-right"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the advanced period only while advance is active."""
+        state = self._system.get_stored_status()
+        if self._attr_zone not in state.unit_status.zones:
+            return "N/A"
+        if not state.unit_status.zones[self._attr_zone].advanced:
+            return "N/A"
+        return super().native_value
+
+
+class RinnaiFirmwareSensor(RinnaiUpdateMixin, SensorEntity):
+    """Diagnostic sensor for controller-reported firmware versions."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, ip_address, name, status_attr, label, icon):
+        self._host = ip_address
+        self._system: RinnaiSystem = RinnaiSystem.get_instance(ip_address)
+        self._status_attr = status_attr
+        self._attr_unique_id = (
+            f"{status_attr}_{str.replace(ip_address, '.', '_')}"
+        )
+        self._attr_name = f"{name} {label}"
+        self._attr_device_name = name
+        self._attr_icon = icon
+
+    @property
+    def device_info(self):
+        """Return device information about this controller."""
+        info = {
+            "identifiers": {("rinnai_touch", self._host)},
+            "model": "Rinnai Touch Wifi",
+            "name": self._attr_device_name,
+            "manufacturer": "Rinnai/Brivis",
+        }
+        firmware_version = self._system.get_stored_status().firmware_version
+        if firmware_version:
+            info["sw_version"] = firmware_version
+        return info
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the version reported in the latest status frame."""
+        return getattr(self._system.get_stored_status(), self._status_attr, None)
+
+    @property
+    def available(self) -> bool:
+        """Return whether the controller supplied this version field."""
+        return bool(self.native_value)
 
 
 class RinnaiConnectionStateSensor(SensorEntity):

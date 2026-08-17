@@ -366,3 +366,5 @@ FodyWeavers.xsd
 /rinnaitouch.pyproj
 /rinnaitouch.sln
 env/
+downloads/
+rinnaitouch.code-workspace

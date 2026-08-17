@@ -35,11 +35,14 @@ from homeassistant.const import (
     CONF_NAME,
     UnitOfTemperature,
 )
+from homeassistant.exceptions import HomeAssistantError
 
 from pyrinnaitouch import (
     TEMP_FAHRENHEIT,
     RinnaiCapabilities,
     RinnaiOperatingMode,
+    RinnaiScheduleDay,
+    RinnaiSchedulePeriod,
     RinnaiSystem,
     RinnaiSystemMode,
     RinnaiSystemStatus,
@@ -58,6 +61,7 @@ from .const import (
     DOMAIN,
     PRESET_AUTO,
     PRESET_MANUAL,
+    SCHEDULE_ENABLED_ZONES,
 )
 from homeassistant.core import callback
 from .entity import (
@@ -72,6 +76,41 @@ SUPPORT_FLAGS_ON_OFF = ClimateEntityFeature.TURN_OFF | ClimateEntityFeature.TURN
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(seconds=5)
+
+
+async def _set_schedule_period(
+    system,
+    day,
+    period,
+    start_time,
+    temperature,
+    *,
+    zone=None,
+    enabled_zones=None,
+):
+    """Translate Home Assistant service values and program a schedule period."""
+    try:
+        schedule_day = RinnaiScheduleDay[day.upper()]
+        schedule_period = RinnaiSchedulePeriod[period.upper()]
+        time_value = (
+            start_time.strftime("%H:%M")
+            if hasattr(start_time, "strftime")
+            else str(start_time)
+        )
+        success = await system.set_schedule_period(
+            schedule_day,
+            schedule_period,
+            time_value,
+            temperature,
+            zone=zone,
+            enabled_zones=enabled_zones,
+        )
+    except (KeyError, ValueError) as err:
+        raise HomeAssistantError(str(err)) from err
+
+    if not success:
+        raise HomeAssistantError("The Rinnai controller rejected the schedule update")
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up climate entities."""
@@ -341,6 +380,28 @@ class RinnaiTouch(RinnaiUpdateMixin, ClimateEntity):
     async def set_system_time(self, set_datetime: datetime = None):
         """Set the system time."""
         await self._system.set_system_time(set_datetime)
+
+    async def set_schedule_period(
+        self,
+        day,
+        period,
+        start_time,
+        temperature,
+        enabled_zones=None,
+    ):
+        """Program one period of a single-set-point schedule."""
+        if self._system.get_stored_status().is_multi_set_point:
+            raise HomeAssistantError(
+                "Target a zone climate entity when programming an MTSP schedule"
+            )
+        await _set_schedule_period(
+            self._system,
+            day,
+            period,
+            start_time,
+            temperature,
+            enabled_zones=enabled_zones,
+        )
 
     async def async_set_temperature(self, **kwargs):
         """Set new target temperature."""
@@ -796,6 +857,28 @@ class RinnaiTouchZone(RinnaiUpdateMixin, ClimateEntity):
                     await self._system.set_evap_zone_manual(self._attr_zone)
                 if self.cooling_mode == COOLING_NONE:
                     await self._system.set_unit_zone_manual(self._attr_zone)
+
+    async def set_schedule_period(
+        self,
+        day,
+        period,
+        start_time,
+        temperature,
+        enabled_zones=None,
+    ):
+        """Program one period of this MTSP zone's schedule."""
+        if enabled_zones is not None:
+            raise HomeAssistantError(
+                f"{SCHEDULE_ENABLED_ZONES} only applies to single-set-point schedules"
+            )
+        await _set_schedule_period(
+            self._system,
+            day,
+            period,
+            start_time,
+            temperature,
+            zone=self._attr_zone,
+        )
 
     async def async_set_temperature(self, **kwargs):
         """Set new target temperature."""

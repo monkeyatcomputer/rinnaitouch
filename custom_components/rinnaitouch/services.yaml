@@ -27,3 +27,77 @@ rinnai_set_time:
       # the input UI for this field
       selector:
         datetime:
+
+set_schedule_period:
+  target:
+    entity:
+      domain: climate
+      integration: rinnaitouch
+  fields:
+    day:
+      required: true
+      selector:
+        select:
+          options:
+            - label: Monday
+              value: monday
+            - label: Tuesday
+              value: tuesday
+            - label: Wednesday
+              value: wednesday
+            - label: Thursday
+              value: thursday
+            - label: Friday
+              value: friday
+            - label: Saturday
+              value: saturday
+            - label: Sunday
+              value: sunday
+            - label: Weekdays
+              value: weekdays
+            - label: Weekends
+              value: weekends
+            - label: All days
+              value: all_days
+    period:
+      required: true
+      selector:
+        select:
+          options:
+            - label: Wake
+              value: wake
+            - label: Leave
+              value: leave
+            - label: Return
+              value: return
+            - label: Pre-Sleep
+              value: pre_sleep
+            - label: Sleep
+              value: sleep
+    start_time:
+      required: true
+      selector:
+        time:
+    temperature:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 1
+          mode: box
+          unit_of_measurement: °C
+    enabled_zones:
+      required: false
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: Zone A
+              value: A
+            - label: Zone B
+              value: B
+            - label: Zone C
+              value: C
+            - label: Zone D
+              value: D

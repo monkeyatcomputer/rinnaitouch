@@ -1,2 +1,2 @@
-pyrinnaitouch@git+https://github.com/monkeyatcomputer/pyrinnaitouch.git@v0.15.0-alpha
+pyrinnaitouch@git+https://github.com/monkeyatcomputer/pyrinnaitouch.git@v0.15.3-alpha
 homeassistant>=2024.2.0

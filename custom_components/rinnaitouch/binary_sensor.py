@@ -1,8 +1,11 @@
 """Binary sensors for prewetting and preheating"""
 # import logging
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
-from homeassistant.const import CONF_NAME, CONF_HOST
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
+from homeassistant.const import CONF_NAME, CONF_HOST, EntityCategory
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
@@ -35,6 +38,7 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
     data = hass.data[DOMAIN][entry.entry_id]
     entities = [
         RinnaiConnectedBinarySensorEntity(ip_address, name),
+        RinnaiFaultBinarySensorEntity(ip_address, name),
         RinnaiFanOperatingBinarySensorEntity(ip_address, name),
         RinnaiTimeSettingSensorEntity(ip_address, name),
     ]
@@ -343,6 +347,58 @@ class RinnaiTimeSettingSensorEntity(RinnaiBinarySensorEntity):
         if not state.has_fault:
             return True
         return False
+
+
+class RinnaiFaultBinarySensorEntity(RinnaiBinarySensorEntity):
+    """Report whether the controller has detected a system fault."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    _APPLIANCE_NAMES = {
+        "H": "Heating",
+        "E": "Evaporative cooling",
+        "C": "Add-on cooling",
+        "R": "Reverse cycle",
+        "N": "Controller",
+    }
+    _SEVERITY_NAMES = {
+        "M": "Minor",
+        "B": "Busy",
+        "L": "Lockout",
+    }
+
+    def __init__(self, ip_address, name):
+        super().__init__(ip_address, name)
+        self._attr_name = name + " Fault"
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether the controller reports a fault."""
+        return self._system.get_stored_status().has_fault
+
+    @property
+    def available(self) -> bool:
+        """Fault state is part of every valid controller status frame."""
+        return True
+
+    @property
+    def extra_state_attributes(self):
+        """Return controller-supplied details for the active fault."""
+        state = self._system.get_stored_status()
+        if not state.has_fault:
+            return {}
+        attributes = {
+            "appliance": self._APPLIANCE_NAMES.get(
+                state.fault_appliance, state.fault_appliance
+            ),
+            "unit": state.fault_unit,
+            "severity": self._SEVERITY_NAMES.get(
+                state.fault_severity, state.fault_severity
+            ),
+            "code": state.fault_code,
+        }
+        return {key: value for key, value in attributes.items() if value is not None}
 
 
 class RinnaiZoneStateBinarySensorEntity(RinnaiBinarySensorEntity):

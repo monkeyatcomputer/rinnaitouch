@@ -20,7 +20,7 @@ Thank you to the maintainers and contributors of the original integration and th
 
 ## :flight_departure: Dependencies
 
-This component depends on the [`monkeyatcomputer/pyrinnaitouch`](https://github.com/monkeyatcomputer/pyrinnaitouch) fork. Home Assistant installs the library directly from the `v0.15.0-alpha` Git tag specified in the integration manifest; it does not use the separately published `pyrinnaitouch` package from PyPI.
+This component depends on the [`monkeyatcomputer/pyrinnaitouch`](https://github.com/monkeyatcomputer/pyrinnaitouch) fork. Home Assistant installs the library directly from the `v0.15.3-alpha` Git tag specified in the integration manifest; it does not use the separately published `pyrinnaitouch` package from PyPI.
 
 The matching `pyrinnaitouch` tag must be published before the corresponding integration release. If the tag is missing or inaccessible, Home Assistant cannot install the requirement and the integration will not load.
 
@@ -67,6 +67,42 @@ The integration reads the controller's `CFG.MTSP` flag and zone status. You no l
 | Evaporative cooling | Owns comfort level or fan speed | Zone participation controls | Zone participation control when the controller reports U |
 
 The integration adds zone entities when the bridge first reports each zone. A mode change can reveal a different zone list, so the integration keeps the zones seen in earlier modes and adds new entities without a reload. It uses the zone descriptions from the controller for entity names.
+
+MTSP thermostat zones expose their active schedule period, advanced period, and
+stateful Advance switch. The period sensors report `N/A` while the system or
+zone schedule is not active. Their attributes show the controller's day
+grouping and whether the optional Pre-Sleep period is enabled.
+
+### Program a schedule period
+
+Use the `rinnaitouch.set_schedule_period` action to change a period in the
+currently selected heating or add-on cooling schedule. Target the main climate
+entity for a single-set-point system, or the relevant zone climate entity for
+an MTSP system. The action accepts the controller's configured day grouping,
+period, start time, and setpoint. Single-set-point systems can also update which
+zones are enabled for that period.
+
+The day must match the grouping configured on the controller: an individual
+weekday, `weekdays`/`weekends`, or `all_days`. Setpoints below 8 °C disable the
+period. Pre-Sleep is accepted only when that period is enabled on the
+controller.
+
+```yaml
+action: rinnaitouch.set_schedule_period
+target:
+  entity_id: climate.rinnai_touch_zone_a
+data:
+  day: weekdays
+  period: return
+  start_time: "17:30:00"
+  temperature: 22
+```
+
+## Diagnostics
+
+The device diagnostics include controller and Wi-Fi module firmware versions,
+connection state, and a problem-class binary sensor for controller-reported
+faults.
 
 Existing config entries can keep their old zone fields. Version 0.14 ignores those fields and uses the bridge status.
 

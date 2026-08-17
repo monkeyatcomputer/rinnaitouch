@@ -24,5 +24,43 @@
                     "description": "Enter the bridge address. Installed zones and MTSP/SSP topology are detected automatically."
             }
         }
+    },
+    "services": {
+        "rinnai_set_time": {
+            "name": "Set controller time",
+            "description": "Sets the day and time on the Rinnai controller.",
+            "fields": {
+                "set_datetime": {
+                    "name": "Date and time",
+                    "description": "Date and time to send, or the current Home Assistant time when omitted."
+                }
+            }
+        },
+        "set_schedule_period": {
+            "name": "Set schedule period",
+            "description": "Programs one period in the active heating or add-on cooling schedule. Target the main climate entity on a single-set-point system or a zone climate entity on an MTSP system.",
+            "fields": {
+                "day": {
+                    "name": "Day",
+                    "description": "Select the day option matching the controller's configured grouping."
+                },
+                "period": {
+                    "name": "Period",
+                    "description": "Schedule period to program."
+                },
+                "start_time": {
+                    "name": "Start time",
+                    "description": "Time at which this period begins."
+                },
+                "temperature": {
+                    "name": "Setpoint",
+                    "description": "Values below 8 °C disable heating or cooling for this period."
+                },
+                "enabled_zones": {
+                    "name": "Enabled zones",
+                    "description": "Optional zone states for a single-set-point schedule. Omit this field to preserve the existing zone states; it is not used for MTSP zones."
+                }
+            }
+        }
     }
 }

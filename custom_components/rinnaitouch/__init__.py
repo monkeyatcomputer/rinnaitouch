@@ -19,7 +19,19 @@ from homeassistant.helpers.dispatcher import dispatcher_send
 
 from pyrinnaitouch import RinnaiCapabilities, RinnaiSystem, RinnaiTopology
 
-from .const import DOMAIN, SERVICE_SET_TIME, SET_DATETIME
+from .const import (
+    DOMAIN,
+    SCHEDULE_DAY,
+    SCHEDULE_DAYS,
+    SCHEDULE_ENABLED_ZONES,
+    SCHEDULE_PERIOD,
+    SCHEDULE_PERIODS,
+    SCHEDULE_START_TIME,
+    SCHEDULE_TEMPERATURE,
+    SERVICE_SET_SCHEDULE_PERIOD,
+    SERVICE_SET_TIME,
+    SET_DATETIME,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +64,25 @@ async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
         entity_domain=CLIMATE_DOMAIN,
         schema={vol.Optional(SET_DATETIME): cv.datetime},
         func="set_system_time",
+    )
+    service.async_register_platform_entity_service(
+        hass,
+        DOMAIN,
+        SERVICE_SET_SCHEDULE_PERIOD,
+        entity_domain=CLIMATE_DOMAIN,
+        schema={
+            vol.Required(SCHEDULE_DAY): vol.In(SCHEDULE_DAYS),
+            vol.Required(SCHEDULE_PERIOD): vol.In(SCHEDULE_PERIODS),
+            vol.Required(SCHEDULE_START_TIME): cv.time,
+            vol.Required(SCHEDULE_TEMPERATURE): vol.All(
+                vol.Coerce(int), vol.Range(min=0, max=30)
+            ),
+            vol.Optional(SCHEDULE_ENABLED_ZONES): vol.All(
+                cv.ensure_list,
+                [vol.In(("A", "B", "C", "D"))],
+            ),
+        },
+        func="set_schedule_period",
     )
     return True
 

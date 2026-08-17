@@ -21,3 +21,22 @@ CONF_TEMP_SENSOR_C = "external_temperature_sensor_c"
 CONF_TEMP_SENSOR_D = "external_temperature_sensor_d"
 SET_DATETIME = "set_datetime"
 SERVICE_SET_TIME = "rinnai_set_time"
+SERVICE_SET_SCHEDULE_PERIOD = "set_schedule_period"
+SCHEDULE_DAY = "day"
+SCHEDULE_DAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "weekdays",
+    "weekends",
+    "all_days",
+)
+SCHEDULE_ENABLED_ZONES = "enabled_zones"
+SCHEDULE_PERIOD = "period"
+SCHEDULE_PERIODS = ("wake", "leave", "return", "pre_sleep", "sleep")
+SCHEDULE_START_TIME = "start_time"
+SCHEDULE_TEMPERATURE = "temperature"
