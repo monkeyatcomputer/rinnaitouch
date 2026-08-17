@@ -81,6 +81,28 @@ stateful Advance switch. The period sensors report `N/A` while the system or
 zone schedule is not active. Their attributes show the controller's day
 grouping and whether the optional Pre-Sleep period is enabled.
 
+### Schedule calendars
+
+The integration creates a read-only schedule calendar for the main controller
+on a single-set-point system, or one calendar per thermostat zone on an MTSP
+system. Calendar events show each enabled period and setpoint; disabled periods
+are skipped so the preceding setpoint continues until the next enabled period.
+
+Schedule data is read from the controller in a Home Assistant background task
+after startup and refreshed nightly at 03:05 local time. Integration setup and
+calendar views do not wait for the controller scan. Calendar requests use the
+last successful in-memory snapshot, and a failed refresh leaves that snapshot
+intact. The calendar entity exposes the last sync time, active controller mode,
+day grouping, and latest sync error as attributes.
+
+Controller period times are interpreted in the Home Assistant instance's
+configured home timezone, matching the wall-clock schedule used by the Rinnai
+controller and preserving local times across daylight-saving transitions.
+
+The bridge only exposes the schedule for the currently selected heating or
+refrigerated-cooling mode. A sync attempted in evaporative mode is deferred
+until the next scheduled refresh after a supported mode is selected.
+
 ### Program a schedule period
 
 Use the `rinnaitouch.set_schedule_period` action to change a period in the

@@ -2,7 +2,10 @@
 
 # pylint: disable=duplicate-code
 import logging
+import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Callable
 
 import voluptuous as vol
 
@@ -16,8 +19,16 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.const import Platform
 from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.helpers.dispatcher import dispatcher_send
+from homeassistant.helpers.event import async_track_time_change
+from homeassistant.util import dt as dt_util
 
-from pyrinnaitouch import RinnaiCapabilities, RinnaiSystem, RinnaiTopology
+from pyrinnaitouch import (
+    RinnaiCapabilities,
+    RinnaiSchedule,
+    RinnaiSystem,
+    RinnaiSystemMode,
+    RinnaiTopology,
+)
 
 from .const import (
     DOMAIN,
@@ -46,7 +57,13 @@ def connection_signal(host: str) -> str:
     return f"{DOMAIN}_{host}_connection_update"
 
 
+def schedule_signal(host: str) -> str:
+    """Return the dispatcher signal used for schedule cache updates."""
+    return f"{DOMAIN}_{host}_schedule_update"
+
+
 PLATFORMS = [
+    Platform.CALENDAR,
     Platform.CLIMATE,
     Platform.SWITCH,
     Platform.BINARY_SENSOR,
@@ -148,6 +165,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             entity_registry.async_remove(entity_entry.entity_id)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    if data.has_fixed_temperature_unit:
+        data.start_schedule_sync()
     # hass.config_entries.async_setup_platforms(entry, PLATFORMS)
     return True
 
@@ -180,12 +199,22 @@ async def async_remove_config_entry_device(
 class RinnaiData:
     """Data for the Rinnai Touch integration."""
 
+    # pylint: disable=too-many-instance-attributes
+
     hass: HomeAssistant
     host: str
     system: RinnaiSystem
     topology: RinnaiTopology
     capabilities: RinnaiCapabilities
+    schedule_cache: dict[str | None, RinnaiSchedule] = field(
+        default_factory=dict, init=False
+    )
+    schedule_last_sync: datetime | None = field(default=None, init=False)
+    schedule_sync_error: str | None = field(default=None, init=False)
     _started: bool = field(default=False, init=False)
+    _schedule_sync_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _schedule_sync_task: asyncio.Task | None = field(default=None, init=False)
+    _schedule_sync_unsub: Callable[[], None] | None = field(default=None, init=False)
 
     def start(self) -> None:
         """Bridge library worker-thread callbacks onto the HA event loop."""
@@ -201,7 +230,86 @@ class RinnaiData:
             return
         self.system.unsubscribe_updates(self._status_updated)
         self.system.unregister_socket_state_handler(self._connection_updated)
+        if self._schedule_sync_unsub is not None:
+            self._schedule_sync_unsub()
+            self._schedule_sync_unsub = None
+        if self._schedule_sync_task is not None:
+            self._schedule_sync_task.cancel()
+            self._schedule_sync_task = None
         self._started = False
+
+    def start_schedule_sync(self) -> None:
+        """Start the non-blocking startup and nightly schedule refreshes."""
+        if self._schedule_sync_unsub is None:
+            self._schedule_sync_unsub = async_track_time_change(
+                self.hass,
+                self._nightly_schedule_sync,
+                hour=3,
+                minute=5,
+                second=0,
+            )
+        self.request_schedule_sync("startup")
+
+    def request_schedule_sync(self, reason: str) -> None:
+        """Schedule a refresh without blocking the caller or HA startup."""
+        if self._schedule_sync_task is not None and not self._schedule_sync_task.done():
+            _LOGGER.debug("Schedule sync already running; ignoring %s request", reason)
+            return
+        self._schedule_sync_task = self.hass.async_create_task(
+            self.async_sync_schedule(),
+            name=f"{DOMAIN} schedule sync ({reason})",
+        )
+
+    def _nightly_schedule_sync(self, _now: datetime) -> None:
+        """Queue the nightly controller schedule refresh."""
+        self.request_schedule_sync("nightly")
+
+    async def async_sync_schedule(self) -> None:
+        """Read all active controller schedules into an atomic cache."""
+        async with self._schedule_sync_lock:
+            state = self.system.get_stored_status()
+            if state.mode not in (
+                RinnaiSystemMode.HEATING,
+                RinnaiSystemMode.COOLING,
+            ):
+                self.schedule_sync_error = (
+                    "Schedule sync requires heating or refrigerated cooling mode"
+                )
+                dispatcher_send(self.hass, schedule_signal(self.host))
+                return
+
+            if self.topology.multi_set_point:
+                schedule_keys = tuple(
+                    zone
+                    for zone in self.thermostat_zones
+                    if (
+                        (capabilities := self.system.get_zone_capabilities(zone))
+                        and capabilities.schedule
+                    )
+                )
+            else:
+                schedule_keys = (None,)
+
+            if not schedule_keys:
+                self.schedule_sync_error = "No schedule-capable zones are available"
+                dispatcher_send(self.hass, schedule_signal(self.host))
+                return
+
+            try:
+                refreshed = {
+                    key: await self.system.async_read_schedule(zone=key)
+                    for key in schedule_keys
+                }
+            except Exception as err:  # pylint: disable=broad-except
+                self.schedule_sync_error = str(err)
+                _LOGGER.warning("Schedule sync failed: %s", err)
+                dispatcher_send(self.hass, schedule_signal(self.host))
+                return
+
+            self.schedule_cache = refreshed
+            self.schedule_last_sync = dt_util.now()
+            self.schedule_sync_error = None
+            dispatcher_send(self.hass, schedule_signal(self.host))
 
     def _status_updated(self) -> None:
         dispatcher_send(self.hass, update_signal(self.host))
