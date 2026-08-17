@@ -4,8 +4,8 @@
   "documentation": "https://github.com/monkeyatcomputer/rinnaitouch",
   "issue_tracker": "https://github.com/monkeyatcomputer/rinnaitouch/issues",
   "codeowners": [ "@monkeyatcomputer" ],
-  "requirements": [ "pyrinnaitouch@git+https://github.com/monkeyatcomputer/pyrinnaitouch.git@v0.15.0" ],
+  "requirements": [ "pyrinnaitouch@git+https://github.com/monkeyatcomputer/pyrinnaitouch.git@v0.15.0-alpha" ],
   "config_flow": true,
-  "version": "0.15.0",
+  "version": "0.15.0-alpha",
   "iot_class": "local_push"
 }
