@@ -117,9 +117,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         RinnaiSystem.remove_instance(ip_address)
         raise ConfigEntryNotReady from err
 
-    entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, system.shutdown)
-    )
     data = RinnaiData(
         hass=hass,
         host=ip_address,
@@ -128,7 +125,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         capabilities=system.get_stored_status().capabilities,
     )
     data.start()
-    entry.async_on_unload(data.close)
+
+    async def _async_cleanup() -> None:
+        """Stop background work before closing the controller transport."""
+        await data.async_close()
+        system.shutdown()
+
+    async def _async_stop(_event) -> None:
+        """Clean up in the same order while Home Assistant is stopping."""
+        await _async_cleanup()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop)
+    )
+    entry.async_on_unload(_async_cleanup)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
 
     # Remove entity registry entries superseded by controls that better match
@@ -180,8 +190,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     if not unload_ok:
         return False
 
-    hass.data[DOMAIN].pop(entry.entry_id)
+    data: RinnaiData | None = hass.data[DOMAIN].get(entry.entry_id)
+    if data is not None:
+        await data.async_close()
     RinnaiSystem.remove_instance(ip_address)
+    hass.data[DOMAIN].pop(entry.entry_id, None)
     _LOGGER.debug("Controller with IP: %s removed", ip_address)
 
     return unload_ok
@@ -224,19 +237,28 @@ class RinnaiData:
         self.system.register_socket_state_handler(self._connection_updated)
         self._started = True
 
-    def close(self) -> None:
-        """Detach callbacks registered for this config entry."""
-        if not self._started:
-            return
-        self.system.unsubscribe_updates(self._status_updated)
-        self.system.unregister_socket_state_handler(self._connection_updated)
+    async def async_close(self) -> None:
+        """Stop background work before detaching the controller transport."""
         if self._schedule_sync_unsub is not None:
             self._schedule_sync_unsub()
             self._schedule_sync_unsub = None
-        if self._schedule_sync_task is not None:
-            self._schedule_sync_task.cancel()
-            self._schedule_sync_task = None
-        self._started = False
+        schedule_task = self._schedule_sync_task
+        self._schedule_sync_task = None
+        if schedule_task is not None and not schedule_task.done():
+            schedule_task.cancel()
+            try:
+                await schedule_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug(
+                    "Schedule task failed while the integration was unloading",
+                    exc_info=True,
+                )
+        if self._started:
+            self.system.unsubscribe_updates(self._status_updated)
+            self.system.unregister_socket_state_handler(self._connection_updated)
+            self._started = False
 
     def start_schedule_sync(self) -> None:
         """Start the non-blocking startup and nightly schedule refreshes."""

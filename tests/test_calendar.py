@@ -209,3 +209,35 @@ def test_schedule_sync_is_queued_in_background_and_registered_for_local_night(
         await data._schedule_sync_task
 
     asyncio.run(run_test())
+
+
+def test_async_close_awaits_schedule_task_cleanup():
+    """Transport shutdown must not race an active schedule programming session."""
+
+    async def run_test():
+        cleanup_complete = False
+
+        async def schedule_scan():
+            nonlocal cleanup_complete
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                cleanup_complete = True
+
+        data = RinnaiData(
+            hass=SimpleNamespace(),
+            host="192.0.2.1",
+            system=SimpleNamespace(),
+            topology=SimpleNamespace(multi_set_point=False),
+            capabilities=set(),
+        )
+        data._schedule_sync_task = asyncio.create_task(schedule_scan())
+        await asyncio.sleep(0)
+
+        await data.async_close()
+
+        assert cleanup_complete
+        assert data._schedule_sync_task is None
+
+    asyncio.run(run_test())
