@@ -428,7 +428,7 @@ class RinnaiZoneAdvanceSwitch(RinnaiExtraEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs):
         """Cancel advance and restore the zone's normal schedule."""
         if self.available and self.is_on:
-            await self._system.unit_zone_advance_cancel(self._attr_zone)
+            await self._system.set_unit_zone_advance_cancel(self._attr_zone)
 
 
 class RinnaiCircFanSwitch(RinnaiExtraEntity, SwitchEntity):
