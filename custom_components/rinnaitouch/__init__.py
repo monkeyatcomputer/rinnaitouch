@@ -124,7 +124,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         f"rinnaiheatermodeswitch_{host_id}",
     }
     obsolete_mtsp_controls = {
+        f"rinnaitouch_{host_id}",
         f"rinnaiautoswitch_{host_id}",
+        f"rinnaicoolingtypeselect_{host_id}",
         f"rinnaiselectpresetentity_{host_id}",
     }
     for entity_entry in er.async_entries_for_config_entry(

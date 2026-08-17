@@ -60,13 +60,21 @@ Support for <b>zones</b> has come a long way, but there is still more testing to
 
 The integration reads the controller's `CFG.MTSP` flag and zone status. You no longer select installed zones during setup.
 
-| Controller setup | Main climate | Zones A-D | Common zone U |
+| Controller setup | Whole-system control | Zones A-D | Common zone U |
 |---|---|---|---|
 | Single set point (`MTSP=N`) | Owns the temperature target and schedule | Damper on/off switches and temperature sensors | Read-only in heating and refrigerated cooling |
-| Multi set point / ZonePlus (`MTSP=Y`) | Controls system power and global HVAC mode | Independent climate entities with set points and schedules; each offers Off plus the active global mode | Read-only in heating and refrigerated cooling |
+| Multi set point / ZonePlus (`MTSP=Y`) | Separate power switch and System Mode select | Independent climate entities with set points and schedules; each offers Off plus the active global mode | Read-only in heating and refrigerated cooling |
 | Evaporative cooling | Owns comfort level or fan speed | Zone participation controls | Zone participation control when the controller reports U |
 
 The integration adds zone entities when the bridge first reports each zone. A mode change can reveal a different zone list, so the integration keeps the zones seen in earlier modes and adds new entities without a reload. It uses the zone descriptions from the controller for entity names.
+
+On MTSP systems, the System Mode select exposes the installed heating,
+refrigerated-cooling, and evaporative-cooling modes. Changing it does not turn
+the system on or off; power remains controlled by the dedicated On/Off switch.
+The redundant whole-unit climate entity is removed because its temperature and
+schedule controls belong to the individual zone climates. When evaporative
+cooling is installed, a separate Evaporative Cooler climate remains available
+in that mode because comfort and fan speed are whole-system controls.
 
 MTSP thermostat zones expose their active schedule period, advanced period, and
 stateful Advance switch. The period sensors report `N/A` while the system or

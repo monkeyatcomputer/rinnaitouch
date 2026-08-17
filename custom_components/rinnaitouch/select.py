@@ -18,6 +18,9 @@ from .const import (
     DOMAIN,
     PRESET_AUTO,
     PRESET_MANUAL,
+    SYSTEM_MODE_EVAPORATIVE_COOLING,
+    SYSTEM_MODE_HEATING,
+    SYSTEM_MODE_REFRIGERATED_COOLING,
 )
 from .entity import RinnaiUpdateMixin
 
@@ -34,15 +37,91 @@ async def async_setup_entry(
         name = DEFAULT_NAME
     data = hass.data[DOMAIN][entry.entry_id]
     entities = []
-    if not data.topology.multi_set_point:
+    if data.topology.multi_set_point:
+        entities.append(
+            RinnaiSystemModeSelectEntity(
+                ip_address, name, data.capabilities
+            )
+        )
+    else:
         entities.append(RinnaiSelectPresetEntity(ip_address, name))
-    if {
+    if not data.topology.multi_set_point and {
         RinnaiCapabilities.COOLER,
         RinnaiCapabilities.EVAP,
     }.issubset(data.capabilities):
         entities.append(RinnaiCoolingTypeSelectEntity(ip_address, name))
     async_add_entities(entities)
     return True
+
+
+class RinnaiSystemModeSelectEntity(RinnaiUpdateMixin, SelectEntity):
+    """Select the active whole-system mode on an MTSP installation."""
+
+    def __init__(self, ip_address, name, capabilities):
+        self._host = ip_address
+        self._system: RinnaiSystem = RinnaiSystem.get_instance(ip_address)
+        self._attr_unique_id = (
+            "rinnaisystemmodeselect_" + str.replace(ip_address, ".", "_")
+        )
+        self._attr_name = name + " System Mode"
+        self._attr_device_name = name
+        options = []
+        if RinnaiCapabilities.HEATER in capabilities:
+            options.append(SYSTEM_MODE_HEATING)
+        if RinnaiCapabilities.COOLER in capabilities:
+            options.append(SYSTEM_MODE_REFRIGERATED_COOLING)
+        if RinnaiCapabilities.EVAP in capabilities:
+            options.append(SYSTEM_MODE_EVAPORATIVE_COOLING)
+        self._attr_options = options
+
+    @property
+    def device_info(self):
+        """Return device information about this controller."""
+        return {
+            "identifiers": {("rinnai_touch", self._host)},
+            "model": "Rinnai Touch Wifi",
+            "name": self._attr_device_name,
+            "manufacturer": "Rinnai/Brivis",
+        }
+
+    @property
+    def icon(self):
+        """Return an icon for the selected equipment mode."""
+        mode = self._system.get_stored_status().mode
+        if mode == RinnaiSystemMode.HEATING:
+            return "mdi:fire"
+        if mode == RinnaiSystemMode.COOLING:
+            return "mdi:snowflake"
+        if mode == RinnaiSystemMode.EVAP:
+            return "mdi:snowflake-melt"
+        return "mdi:hvac"
+
+    @property
+    def current_option(self):
+        """Return the controller's selected system mode."""
+        mode = self._system.get_stored_status().mode
+        if mode == RinnaiSystemMode.HEATING:
+            return SYSTEM_MODE_HEATING
+        if mode == RinnaiSystemMode.COOLING:
+            return SYSTEM_MODE_REFRIGERATED_COOLING
+        if mode == RinnaiSystemMode.EVAP:
+            return SYSTEM_MODE_EVAPORATIVE_COOLING
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        """Change equipment mode without changing system power."""
+        if option == self.current_option:
+            return
+        if option == SYSTEM_MODE_HEATING:
+            await self._system.set_heater_mode()
+            return
+        if option == SYSTEM_MODE_REFRIGERATED_COOLING:
+            await self._system.set_cooling_mode()
+            return
+        if option == SYSTEM_MODE_EVAPORATIVE_COOLING:
+            await self._system.set_evap_mode()
+            return
+        raise ValueError(f"Unsupported system mode: {option}")
 
 
 class RinnaiSelectPresetEntity(RinnaiUpdateMixin, SelectEntity):

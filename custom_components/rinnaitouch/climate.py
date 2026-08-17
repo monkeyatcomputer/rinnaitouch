@@ -130,7 +130,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
         "D": temperature_entity_d,
     }
     data = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([RinnaiTouch(hass, ip_address, name, temperature_entity)])
+    if not data.topology.multi_set_point:
+        async_add_entities(
+            [RinnaiTouch(hass, ip_address, name, temperature_entity)]
+        )
+    elif data.has_evap:
+        async_add_entities(
+            [RinnaiTouchEvap(hass, ip_address, name)]
+        )
     setup_discovered_entities(
         hass,
         entry,
@@ -600,6 +607,81 @@ class RinnaiTouch(RinnaiUpdateMixin, ClimateEntity):
         """Disconnect from the device."""
         await super().async_will_remove_from_hass()
         _LOGGER.debug("removing entity from hass")
+
+
+class RinnaiTouchEvap(RinnaiTouch):
+    """Whole-system evaporative cooler controls for an MTSP installation."""
+
+    def __init__(self, hass, ip_address, name):
+        super().__init__(hass, ip_address, name)
+        self._attr_unique_id = (
+            "rinnaitouchevap_" + str.replace(ip_address, ".", "_")
+        )
+        self._attr_name = name + " Evaporative Cooler"
+
+    @property
+    def available(self):
+        """Expose this climate only while evaporative mode is selected."""
+        return self._system.get_stored_status().mode == RinnaiSystemMode.EVAP
+
+    @property
+    def current_temperature(self):
+        """Evaporative mode does not report a meaningful room temperature."""
+        return None
+
+    @property
+    def hvac_modes(self):
+        """Return only the modes owned by this evaporative entity."""
+        return [HVACMode.OFF, HVACMode.COOL]
+
+    @property
+    def hvac_mode(self):
+        """Return whether the selected evaporative unit is running."""
+        state = self._system.get_stored_status()
+        if state.mode == RinnaiSystemMode.EVAP and state.system_on:
+            return HVACMode.COOL
+        return HVACMode.OFF
+
+    @property
+    def hvac_action(self):
+        """Return the current evaporative operating action."""
+        state = self._system.get_stored_status()
+        if state.mode != RinnaiSystemMode.EVAP or not state.system_on:
+            return HVACAction.OFF
+        if (
+            state.unit_status.prewetting
+            or state.unit_status.cooler_busy
+            or (
+                state.unit_status.fan_operating
+                and state.unit_status.pump_operating
+            )
+        ):
+            return HVACAction.COOLING
+        if state.unit_status.fan_operating:
+            return HVACAction.FAN
+        return HVACAction.IDLE
+
+    async def async_set_hvac_mode(self, hvac_mode):
+        """Control evaporative power without selecting other cooling types."""
+        if hvac_mode == HVACMode.OFF:
+            await self._system.turn_evap_off()
+            return
+        if hvac_mode == HVACMode.COOL:
+            if self._system.get_stored_status().mode != RinnaiSystemMode.EVAP:
+                await self._system.set_evap_mode()
+            await self._system.turn_evap_on()
+            return
+        raise ValueError(f"Unsupported evaporative HVAC mode: {hvac_mode}")
+
+    async def async_set_preset_mode(self, preset_mode):
+        """Select automatic comfort or manual fan control."""
+        if preset_mode == PRESET_AUTO:
+            await self._system.set_evap_auto()
+            return
+        if preset_mode == PRESET_MANUAL:
+            await self._system.set_evap_manual()
+            return
+        raise ValueError(f"Unsupported evaporative preset: {preset_mode}")
 
 
 class RinnaiTouchZone(RinnaiUpdateMixin, ClimateEntity):
