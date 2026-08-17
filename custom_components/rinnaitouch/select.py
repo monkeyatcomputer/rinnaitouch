@@ -6,7 +6,7 @@ from homeassistant.const import CONF_NAME, CONF_HOST
 
 from pyrinnaitouch import RinnaiOperatingMode, RinnaiSystem, RinnaiSystemMode
 
-from .const import PRESET_AUTO, PRESET_MANUAL, DEFAULT_NAME
+from .const import PRESET_AUTO, PRESET_MANUAL, DEFAULT_NAME, DOMAIN
 from .entity import RinnaiUpdateMixin
 
 # _LOGGER = logging.getLogger(__name__)
@@ -20,7 +20,9 @@ async def async_setup_entry(
     name = entry.data.get(CONF_NAME)
     if name == "":
         name = DEFAULT_NAME
-    async_add_entities([RinnaiSelectPresetEntity(ip_address, name)])
+    data = hass.data[DOMAIN][entry.entry_id]
+    if not data.topology.multi_set_point:
+        async_add_entities([RinnaiSelectPresetEntity(ip_address, name)])
     return True
 
 

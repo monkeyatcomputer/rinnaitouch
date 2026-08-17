@@ -34,8 +34,9 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
     entities = [
         RinnaiOnOffSwitch(ip_address, name),
         RinnaiCircFanSwitch(ip_address, name),
-        RinnaiAutoSwitch(ip_address, name),
     ]
+    if not data.topology.multi_set_point:
+        entities.append(RinnaiAutoSwitch(ip_address, name))
     if RinnaiCapabilities.COOLER in data.capabilities:
         entities.append(RinnaiCoolingModeSwitch(ip_address, name))
     if RinnaiCapabilities.HEATER in data.capabilities:
