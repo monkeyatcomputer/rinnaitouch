@@ -20,7 +20,7 @@ Thank you to the maintainers and contributors of the original integration and th
 
 ## :flight_departure: Dependencies
 
-This component depends on the [`monkeyatcomputer/pyrinnaitouch`](https://github.com/monkeyatcomputer/pyrinnaitouch) fork. Home Assistant installs the library directly from the `v0.15.3-alpha` Git tag specified in the integration manifest; it does not use the separately published `pyrinnaitouch` package from PyPI.
+This component depends on the [`monkeyatcomputer/pyrinnaitouch`](https://github.com/monkeyatcomputer/pyrinnaitouch) fork. Home Assistant installs the library directly from the `v0.15.5-alpha` Git tag specified in the integration manifest; it does not use the separately published `pyrinnaitouch` package from PyPI.
 
 The matching `pyrinnaitouch` tag must be published before the corresponding integration release. If the tag is missing or inaccessible, Home Assistant cannot install the requirement and the integration will not load.
 
