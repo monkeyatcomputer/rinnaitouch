@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from pyrinnaitouch import (
+    RinnaiCapabilities,
     RinnaiSchedule,
     RinnaiScheduleDay,
     RinnaiScheduleDayGroup,
@@ -16,6 +17,7 @@ from pyrinnaitouch import (
 
 from custom_components.rinnaitouch import RinnaiData
 from custom_components.rinnaitouch.calendar import schedule_events
+from custom_components.rinnaitouch.entity import setup_discovered_entities
 
 
 def _entry(day, period, start, temperature):
@@ -185,15 +187,27 @@ def test_schedule_sync_is_queued_in_background_and_registered_for_local_night(
             "custom_components.rinnaitouch.dispatcher_send", lambda *_args: None
         )
         hass = SimpleNamespace(async_create_task=create_task)
+        schedule = RinnaiSchedule(
+            mode=RinnaiSystemMode.HEATING,
+            day_group=RinnaiScheduleDayGroup.ALL_DAYS,
+            entries=(),
+            temperature_unit="°C",
+        )
+
+        async def read_schedule(*, zone):
+            assert zone is None
+            return schedule
+
         system = SimpleNamespace(
-            get_stored_status=lambda: SimpleNamespace(mode=RinnaiSystemMode.EVAP)
+            get_stored_status=lambda: SimpleNamespace(mode=RinnaiSystemMode.HEATING),
+            async_read_schedule=read_schedule,
         )
         data = RinnaiData(
             hass=hass,
             host="192.0.2.1",
             system=system,
             topology=SimpleNamespace(multi_set_point=False),
-            capabilities=set(),
+            capabilities={RinnaiCapabilities.HEATER},
         )
 
         data.start_schedule_sync()
@@ -207,8 +221,123 @@ def test_schedule_sync_is_queued_in_background_and_registered_for_local_night(
         }
         assert data._schedule_sync_task is not None
         await data._schedule_sync_task
+        assert data.schedule_cache == {None: schedule}
 
     asyncio.run(run_test())
+
+
+def test_schedule_sync_waits_for_operating_topology_then_runs_once(monkeypatch):
+    """A SYST-only startup must defer, not lose, the first schedule refresh."""
+
+    async def run_test():
+        tracked = {}
+        reads = []
+        state = SimpleNamespace(mode=RinnaiSystemMode.NONE)
+        zones = set()
+        schedule = RinnaiSchedule(
+            mode=RinnaiSystemMode.HEATING,
+            day_group=RinnaiScheduleDayGroup.ALL_DAYS,
+            entries=(),
+            temperature_unit="°C",
+            zone="A",
+        )
+
+        def track_time_change(_hass, action, **_kwargs):
+            tracked["action"] = action
+            return lambda: None
+
+        async def read_schedule(*, zone):
+            reads.append(zone)
+            return schedule
+
+        system = SimpleNamespace(
+            get_stored_status=lambda: state,
+            get_zone_capabilities=lambda zone: SimpleNamespace(
+                schedule=zone in zones
+            ),
+            async_read_schedule=read_schedule,
+        )
+        topology = SimpleNamespace(
+            multi_set_point=True,
+            all_observed_zones=lambda: set(zones),
+        )
+        loop = asyncio.get_running_loop()
+        hass = SimpleNamespace(
+            loop=loop,
+            async_create_task=lambda coro, *, name: loop.create_task(
+                coro, name=name
+            ),
+        )
+        monkeypatch.setattr(
+            "custom_components.rinnaitouch.async_track_time_change",
+            track_time_change,
+        )
+        monkeypatch.setattr(
+            "custom_components.rinnaitouch.dispatcher_send", lambda *_args: None
+        )
+        data = RinnaiData(
+            hass=hass,
+            host="192.0.2.1",
+            system=system,
+            topology=topology,
+            capabilities={RinnaiCapabilities.HEATER},
+        )
+
+        data.start_schedule_sync()
+        assert data._schedule_sync_task is None
+        assert reads == []
+
+        state.mode = RinnaiSystemMode.HEATING
+        zones.add("A")
+        data._status_updated()
+        await asyncio.sleep(0)
+        assert data._schedule_sync_task is not None
+        await data._schedule_sync_task
+
+        assert reads == ["A"]
+        assert data.schedule_cache == {"A": schedule}
+
+        data._status_updated()
+        await asyncio.sleep(0)
+        assert reads == ["A"]
+
+    asyncio.run(run_test())
+
+
+def test_discovered_entities_are_added_when_a_zone_appears(monkeypatch):
+    """An initially empty MTSP topology must not permanently lose zone entities."""
+    callbacks = []
+    unloads = []
+    added = []
+    zones = set()
+
+    def connect(_hass, _signal, callback):
+        callbacks.append(callback)
+        return lambda: None
+
+    monkeypatch.setattr(
+        "custom_components.rinnaitouch.entity.async_dispatcher_connect", connect
+    )
+    entry = SimpleNamespace(async_on_unload=unloads.append)
+
+    setup_discovered_entities(
+        SimpleNamespace(),
+        entry,
+        lambda entities: added.extend(entities),
+        "192.0.2.1",
+        lambda: (
+            (f"zone_schedule_calendar_{zone}", lambda zone=zone: zone)
+            for zone in sorted(zones)
+        ),
+    )
+
+    assert added == []
+    zones.add("A")
+    callbacks[0]()
+    callbacks[0]()
+
+    assert added == ["A"]
+    assert len(unloads) == 1
 
 
 def test_async_close_awaits_schedule_task_cleanup():

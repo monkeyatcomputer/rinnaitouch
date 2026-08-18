@@ -228,6 +228,9 @@ class RinnaiData:
     _schedule_sync_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _schedule_sync_task: asyncio.Task | None = field(default=None, init=False)
     _schedule_sync_unsub: Callable[[], None] | None = field(default=None, init=False)
+    _schedule_sync_signature: (
+        tuple[RinnaiSystemMode, tuple[str | None, ...]] | None
+    ) = field(default=None, init=False)
 
     def start(self) -> None:
         """Bridge library worker-thread callbacks onto the HA event loop."""
@@ -270,50 +273,64 @@ class RinnaiData:
                 minute=5,
                 second=0,
             )
-        self.request_schedule_sync("startup")
+        self._request_schedule_sync_if_ready("startup")
 
-    def request_schedule_sync(self, reason: str) -> None:
+    def request_schedule_sync(self, reason: str) -> bool:
         """Schedule a refresh without blocking the caller or HA startup."""
         if self._schedule_sync_task is not None and not self._schedule_sync_task.done():
             _LOGGER.debug("Schedule sync already running; ignoring %s request", reason)
-            return
+            return False
         self._schedule_sync_task = self.hass.async_create_task(
             self.async_sync_schedule(),
             name=f"{DOMAIN} schedule sync ({reason})",
         )
+        return True
 
     def _nightly_schedule_sync(self, _now: datetime) -> None:
         """Queue the nightly controller schedule refresh."""
-        self.request_schedule_sync("nightly")
+        self._request_schedule_sync_if_ready("nightly", force=True)
+
+    def _schedule_keys_for_current_status(self) -> tuple[str | None, ...]:
+        """Return schedule keys available in the current operating topology."""
+        state = self.system.get_stored_status()
+        if state.mode not in (
+            RinnaiSystemMode.HEATING,
+            RinnaiSystemMode.COOLING,
+        ):
+            return ()
+        if not self.topology.multi_set_point:
+            return (None,)
+        return tuple(
+            zone
+            for zone in self.thermostat_zones
+            if (
+                (capabilities := self.system.get_zone_capabilities(zone))
+                and capabilities.schedule
+            )
+        )
+
+    def _request_schedule_sync_if_ready(
+        self, reason: str, *, force: bool = False
+    ) -> None:
+        """Refresh once when an operating mode exposes schedule-capable zones."""
+        schedule_keys = self._schedule_keys_for_current_status()
+        if not schedule_keys:
+            return
+        signature = (self.system.get_stored_status().mode, schedule_keys)
+        if not force and signature == self._schedule_sync_signature:
+            return
+        if self.request_schedule_sync(reason):
+            self._schedule_sync_signature = signature
 
     async def async_sync_schedule(self) -> None:
         """Read all active controller schedules into an atomic cache."""
         async with self._schedule_sync_lock:
-            state = self.system.get_stored_status()
-            if state.mode not in (
-                RinnaiSystemMode.HEATING,
-                RinnaiSystemMode.COOLING,
-            ):
-                self.schedule_sync_error = (
-                    "Schedule sync requires heating or refrigerated cooling mode"
-                )
-                dispatcher_send(self.hass, schedule_signal(self.host))
-                return
-
-            if self.topology.multi_set_point:
-                schedule_keys = tuple(
-                    zone
-                    for zone in self.thermostat_zones
-                    if (
-                        (capabilities := self.system.get_zone_capabilities(zone))
-                        and capabilities.schedule
-                    )
-                )
-            else:
-                schedule_keys = (None,)
-
+            schedule_keys = self._schedule_keys_for_current_status()
             if not schedule_keys:
-                self.schedule_sync_error = "No schedule-capable zones are available"
+                self.schedule_sync_error = (
+                    "No schedule-capable heating or refrigerated cooling topology "
+                    "is available"
+                )
                 dispatcher_send(self.hass, schedule_signal(self.host))
                 return
 
@@ -335,6 +352,10 @@ class RinnaiData:
 
     def _status_updated(self) -> None:
         dispatcher_send(self.hass, update_signal(self.host))
+        if self._schedule_sync_unsub is not None:
+            self.hass.loop.call_soon_threadsafe(
+                self._request_schedule_sync_if_ready, "status"
+            )
 
     def _connection_updated(self, state) -> None:
         dispatcher_send(self.hass, connection_signal(self.host), state)
