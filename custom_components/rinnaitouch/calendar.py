@@ -111,7 +111,7 @@ def schedule_events(
     event_date = first_date
     while event_date <= last_date:
         for entry in schedule.entries:
-            if entry.enabled and _entry_applies(entry, event_date):
+            if _entry_applies(entry, event_date):
                 starts[
                     datetime.combine(
                         event_date, entry.start_time, tzinfo=home_timezone
@@ -126,11 +126,18 @@ def schedule_events(
         if event_end <= start_date or event_start >= end_date:
             continue
         period_name = _PERIOD_NAMES[entry.period]
-        summary = f"{period_name} · {entry.temperature} {schedule.temperature_unit}"
+        setpoint = (
+            f"{entry.temperature} {schedule.temperature_unit}"
+            if entry.enabled
+            else "Off"
+        )
+        summary = f"{period_name} · {setpoint}"
         description = (
             f"{period_name} controller schedule period in "
             f"{schedule.mode.name.lower()} mode."
         )
+        if not entry.enabled:
+            description += " The zone is off for this period."
         if entry.enabled_zones:
             description += " Enabled zones: " + ", ".join(
                 sorted(entry.enabled_zones)

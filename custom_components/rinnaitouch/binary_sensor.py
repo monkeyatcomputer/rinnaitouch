@@ -39,6 +39,7 @@ async def async_setup_entry(hass, entry, async_add_entities):  # pylint: disable
     entities = [
         RinnaiConnectedBinarySensorEntity(ip_address, name),
         RinnaiFaultBinarySensorEntity(ip_address, name),
+        RinnaiServiceReminderBinarySensorEntity(ip_address, name),
         RinnaiFanOperatingBinarySensorEntity(ip_address, name),
         RinnaiTimeSettingSensorEntity(ip_address, name),
     ]
@@ -399,6 +400,41 @@ class RinnaiFaultBinarySensorEntity(RinnaiBinarySensorEntity):
             "code": state.fault_code,
         }
         return {key: value for key, value in attributes.items() if value is not None}
+
+
+class RinnaiServiceReminderBinarySensorEntity(RinnaiBinarySensorEntity):
+    """Report the active appliance's service reminder."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    _APPLIANCE_NAMES = {
+        RinnaiSystemMode.HEATING: "Heating",
+        RinnaiSystemMode.COOLING: "Add-on cooling",
+        RinnaiSystemMode.EVAP: "Evaporative cooling",
+        RinnaiSystemMode.RC: "Reverse cycle",
+    }
+
+    def __init__(self, ip_address, name):
+        super().__init__(ip_address, name)
+        self._attr_name = name + " Service Reminder"
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether the active appliance reports that service is due."""
+        return self._system.get_stored_status().unit_status.service_required
+
+    @property
+    def available(self) -> bool:
+        """Return whether an appliance mode is selected."""
+        return self._system.get_stored_status().mode in self._APPLIANCE_NAMES
+
+    @property
+    def extra_state_attributes(self):
+        """Identify the appliance that supplied the reminder state."""
+        mode = self._system.get_stored_status().mode
+        appliance = self._APPLIANCE_NAMES.get(mode)
+        return {"appliance": appliance} if appliance else {}
 
 
 class RinnaiZoneStateBinarySensorEntity(RinnaiBinarySensorEntity):

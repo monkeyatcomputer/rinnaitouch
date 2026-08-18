@@ -131,8 +131,10 @@ data:
 ## Diagnostics
 
 The device diagnostics include controller and Wi-Fi module firmware versions,
-connection state, and a problem-class binary sensor for controller-reported
-faults.
+connection state, a problem-class binary sensor for controller-reported faults,
+and a read-only Service Reminder binary sensor backed by the active appliance's
+`SN` status. Clear a service reminder from the wall controller after completing
+the required maintenance; the N-BW2 API does not provide a reset command.
 
 Existing config entries can keep their old zone fields. Version 0.14 ignores those fields and uses the bridge status.
 

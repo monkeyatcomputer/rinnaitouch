@@ -29,7 +29,7 @@ def _entry(day, period, start, temperature):
     )
 
 
-def test_weekday_calendar_expands_enabled_periods_and_skips_disabled_periods():
+def test_weekday_calendar_expands_disabled_periods_as_off():
     schedule = RinnaiSchedule(
         mode=RinnaiSystemMode.HEATING,
         day_group=RinnaiScheduleDayGroup.WEEKDAYS_WEEKENDS,
@@ -82,9 +82,69 @@ def test_weekday_calendar_expands_enabled_periods_and_skips_disabled_periods():
 
     wake = next(event for event in events if event.summary.startswith("Wake"))
     assert wake.start == datetime(2026, 8, 17, 6, 0, tzinfo=timezone)
-    assert wake.end == datetime(2026, 8, 17, 17, 30, tzinfo=timezone)
-    assert all(not event.summary.startswith("Leave") for event in events)
+    assert wake.end == datetime(2026, 8, 17, 8, 0, tzinfo=timezone)
+    leave = next(event for event in events if event.summary.startswith("Leave"))
+    assert leave.summary == "Leave · Off"
+    assert leave.start == datetime(2026, 8, 17, 8, 0, tzinfo=timezone)
+    assert leave.end == datetime(2026, 8, 17, 17, 30, tzinfo=timezone)
+    assert "zone is off" in leave.description
     assert any(event.summary == "Return · 22 °C" for event in events)
+
+
+def test_calendar_shows_disabled_sleep_period_overnight():
+    schedule = RinnaiSchedule(
+        mode=RinnaiSystemMode.HEATING,
+        day_group=RinnaiScheduleDayGroup.ALL_DAYS,
+        temperature_unit="°C",
+        zone="A",
+        entries=(
+            _entry(
+                RinnaiScheduleDay.ALL_DAYS,
+                RinnaiSchedulePeriod.WAKE,
+                "06:25",
+                19,
+            ),
+            _entry(
+                RinnaiScheduleDay.ALL_DAYS,
+                RinnaiSchedulePeriod.PRE_SLEEP,
+                "21:45",
+                18,
+            ),
+            _entry(
+                RinnaiScheduleDay.ALL_DAYS,
+                RinnaiSchedulePeriod.SLEEP,
+                "22:15",
+                0,
+            ),
+        ),
+    )
+    timezone = ZoneInfo("Australia/Sydney")
+
+    events = schedule_events(
+        schedule,
+        datetime(2026, 8, 18, 0, 0, tzinfo=timezone),
+        datetime(2026, 8, 19, 0, 0, tzinfo=timezone),
+        timezone,
+    )
+
+    sleep_events = [event for event in events if event.summary == "Sleep · Off"]
+    assert [(event.start, event.end) for event in sleep_events] == [
+        (
+            datetime(2026, 8, 17, 22, 15, tzinfo=timezone),
+            datetime(2026, 8, 18, 6, 25, tzinfo=timezone),
+        ),
+        (
+            datetime(2026, 8, 18, 22, 15, tzinfo=timezone),
+            datetime(2026, 8, 19, 6, 25, tzinfo=timezone),
+        ),
+    ]
+    pre_sleep = next(
+        event
+        for event in events
+        if event.start == datetime(2026, 8, 18, 21, 45, tzinfo=timezone)
+    )
+    assert pre_sleep.summary == "Pre-Sleep · 18 °C"
+    assert pre_sleep.end == datetime(2026, 8, 18, 22, 15, tzinfo=timezone)
 
 
 def test_single_set_point_calendar_describes_enabled_zones():
