@@ -113,6 +113,14 @@ class RinnaiTouch(ClimateEntity):
         # N-BW2 API: fan only speed level "FL" is 01 - 16
         self._FAN_LIMITS = {"min": 1, "max": 16}
         self._system.subscribe_updates(self.system_updated)
+        self._connected = False
+        self._system.register_socket_state_handler(self._connection_state_handler)
+
+    def _connection_state_handler(self, state):
+        """Update availability even when no new heater status arrives."""
+        self._connected = getattr(state, "name", None) == "CONNECTED"
+        if self.hass is not None:
+            self.schedule_update_ha_state()
 
     def system_updated(self):
         """After system is updated write the new state to HA."""
@@ -324,11 +332,13 @@ class RinnaiTouch(ClimateEntity):
 
     @property
     def available(self):
-        if self._system.get_stored_status().mode != RinnaiSystemMode.NONE:
-            return True
-        return False
+        return (
+            self._connected
+            and self._system.get_stored_status().mode != RinnaiSystemMode.NONE
+        )
 
     async def async_will_remove_from_hass(self):
         """Disconnect from the device."""
-        # Doesn't seem to be needed here, as the ha_stop event already shuts down the client
+        self._system.unsubscribe_updates(self.system_updated)
+        self._system.unregister_socket_state_handler(self._connection_state_handler)
         _LOGGER.debug("removing entity from hass")

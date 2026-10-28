@@ -42,6 +42,14 @@ class RinnaiButtonEntity(ButtonEntity):
         self._attr_name = name
         self._attr_device_name = name
         self._system.subscribe_updates(self.system_updated)
+        self._connected = False
+        self._system.register_socket_state_handler(self._connection_state_handler)
+
+    def _connection_state_handler(self, state):
+        """Update availability even when no new heater status arrives."""
+        self._connected = getattr(state, "name", None) == "CONNECTED"
+        if self.hass is not None:
+            self.schedule_update_ha_state()
 
     def system_updated(self):
         """After system is updated write the new state to HA."""
@@ -50,6 +58,16 @@ class RinnaiButtonEntity(ButtonEntity):
             self.schedule_update_ha_state()
         except:  # pylint: disable=bare-except
             pass
+
+    @property
+    def available(self) -> bool:
+        """Unavailable while the bridge isn't connected, rather than showing stale state."""
+        return self._connected
+
+    async def async_will_remove_from_hass(self):
+        """Stop receiving updates."""
+        self._system.unsubscribe_updates(self.system_updated)
+        self._system.unregister_socket_state_handler(self._connection_state_handler)
 
     @property
     def device_info(self):
@@ -85,6 +103,8 @@ class RinnaiAdvanceButton(RinnaiButtonEntity):
 
     @property
     def available(self) -> bool:
+        if not super().available:
+            return False
         state: RinnaiSystemStatus = self._system.get_stored_status()
         if (
             state.mode == RinnaiSystemMode.HEATING

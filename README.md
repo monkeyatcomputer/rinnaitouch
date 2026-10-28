@@ -61,7 +61,7 @@ The bridge has a single TCP connection slot and is unforgiving about how it is u
 2. **Connection.** The library opens a TCP connection to the bridge on port 27847. It only counts as connected once the first status message arrives, not when the TCP connection opens.
 3. **Status.** The bridge pushes its full status as JSON about once a second. Home Assistant doesn't poll. Entities update when the status changes.
 4. **Commands.** Commands are sent one at a time, each numbered after the bridge's last sequence number (1–254, then back to 1). A command is confirmed when the status shows the new value. Where the status doesn't report that value, the bridge echoing the number counts as confirmation. An unconfirmed command is resent after 10 seconds, up to 3 attempts. A command the status already shows is skipped.
-5. **Keepalive.** If nothing has been sent for 60 seconds, the library sends a bare sequence number, so the bridge doesn't drop the client after its TCP timeout (5 minutes by default).
+5. **Keepalive.** If nothing has been sent for 30 seconds, the library sends a bare sequence number, so the bridge doesn't drop the client after its TCP timeout. That timeout is 5 minutes by default and can be set as low as 1 minute, which 30 seconds still covers.
 6. **Recovery.** If no data arrives for 5 seconds, or the bridge closes the connection, the library reconnects using step 1. After 3 failed attempts in a row it waits a minute before trying again.
 
 The bridge only supports one client at a time. While the Rinnai/Brivis phone app, Homebridge or another integration is connected, Home Assistant waits (Connection State shows `WAITING`) until the bridge is free again.
@@ -71,16 +71,16 @@ The bridge only supports one client at a time. While the Rinnai/Brivis phone app
 This integration depends on the library [pyrinnaitouch](https://github.com/chickymonkey/pyrinnaitouch), installed from the `connection-fixes` branch of the fork and pinned to an exact commit. Home Assistant installs it automatically from the GitHub archive listed in [manifest.json](custom_components/rinnaitouch/manifest.json):
 
 ```
-https://github.com/chickymonkey/pyrinnaitouch/archive/2734d883fc440e11f7483c74b1f9ad7798af9e3f.zip#pyrinnaitouch==0.13.4b1.post2
+https://github.com/chickymonkey/pyrinnaitouch/archive/91f1fa79c8350fe1b5c2d298b717ec35de996fae.zip#pyrinnaitouch==0.13.4b1.post3
 ```
 
-The fork is based on `pyrinnaitouch` 0.13.4b1 and is versioned `0.13.4b1.post2`, so Home Assistant replaces an already installed 0.13.4b1. Its connection handling is rewritten as described in [How it works](#how-it-works). Compared with 0.13.4b1:
+The fork is based on `pyrinnaitouch` 0.13.4b1 and is versioned `0.13.4b1.post3`, so Home Assistant replaces an already installed 0.13.4b1. Its connection handling is rewritten as described in [How it works](#how-it-works). Compared with 0.13.4b1:
 
 - **Connection thread stopping silently.** An unexpected error, such as a byte that isn't valid UTF-8 arriving from the bridge, used to stop the background connection thread for good. Status then froze, commands were never sent and no reconnect was attempted, while the integration still showed as connected. The thread now logs the error and reconnects.
 - **Reconnecting too soon.** The original reconnected straight after a timeout or error, which the bridge refuses and can hold against the client for minutes. Every connection now waits for the release delay and the bridge's broadcast.
 - **Commands that didn't take effect.** Commands used to be fire-and-forget. They are now confirmed against the status and retried, and commands already in effect are not sent.
 - **Replayed commands.** Commands queued while disconnected are discarded on reconnect instead of being sent in a burst minutes later.
-- **Less traffic.** A bare keepalive every 60 seconds replaces an idle command every 10 seconds, and Home Assistant only updates when the status changes.
+- **Less traffic.** A bare keepalive every 30 seconds replaces an idle command every 10 seconds, and Home Assistant only updates when the status changes.
 - **Data parsing.** Incoming data is parsed with a proper JSON decoder that copes with messages split across packets and with junk bytes.
 
 ## Installation
@@ -127,6 +127,7 @@ You shouldn't need to restart Home Assistant or reload the integration to recove
 
 | What happens | How it's detected | What the library does |
 |---|---|---|
+| The connection to the bridge drops | Any of the cases below | The thermostat, switches, preset select and advance button show as **unavailable** until it reconnects, instead of showing the last known state as if it were live. Their history shows a short gap. |
 | The bridge goes quiet | No data for 5 seconds (status normally arrives every second) | Closes the connection and reconnects |
 | The bridge closes the connection | The connection is closed from the other end | Reconnects |
 | Garbled or invalid data | Bytes that don't parse as a status message | Skips them and keeps the connection |
@@ -137,6 +138,10 @@ You shouldn't need to restart Home Assistant or reload the integration to recove
 Every reconnect waits at least 10 seconds after the last connection closed, then for the bridge's broadcast saying it's free, because the bridge refuses connections that come too soon. A dropout therefore usually recovers in 10–15 seconds. During that time the Connection State sensor shows `WAITING` and then `CONNECTING`, and the Connected sensor is off. If 3 attempts in a row fail, the library waits a minute before trying again.
 
 If the Connection State sensor stays at `WAITING`, the bridge isn't broadcasting. Something else is probably connected to it (see [Bridge discovery](#bridge-discovery)). If nothing else is connected, power-cycle the bridge.
+
+If dropouts keep happening, turn on [debug logging](#debug-logging) and check which message appears just before each one. The bridge going quiet, the bridge closing the connection and a refused reconnect each have different causes.
+
+Reloading the integration or restarting Home Assistant closes the connection cleanly. The bridge still takes several seconds to free it, so the new connection follows the same wait as any reconnect.
 
 ### Debug logging
 
